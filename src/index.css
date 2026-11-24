@@ -1,0 +1,195 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: "IBM Plex Sans Arabic", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+
+  html {
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  html[dir="ltr"] {
+    --font-sans: "Plus Jakarta Sans", "IBM Plex Sans Arabic", system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    overflow-x: clip;
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  a,
+  select,
+  input,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Mobile safe-area utilities & smooth scroll helpers */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Always-accessible, smooth top horizontal scrollbar for desktop leads table */
+.crm-top-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 transparent;
+}
+
+.dark .crm-top-scrollbar {
+  scrollbar-color: #475569 transparent;
+}
+
+.crm-top-scrollbar::-webkit-scrollbar {
+  height: 11px;
+}
+
+.crm-top-scrollbar::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.crm-top-scrollbar::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.crm-top-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.dark .crm-top-scrollbar::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.7);
+}
+
+.dark .crm-top-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.dark .crm-top-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.crm-cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 132px;
+}
+
+/* Smooth GPU-composited UI transitions */
+@keyframes crmFadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes crmSheetSlideUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes crmDrawerSlideRtl {
+  from {
+    opacity: 0;
+    transform: translate3d(-20px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes crmDrawerSlideLtr {
+  from {
+    opacity: 0;
+    transform: translate3d(20px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.crm-animate-enter {
+  animation: crmFadeSlideIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.crm-drawer-enter {
+  animation: crmDrawerSlideLtr 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+html[dir="rtl"] .crm-drawer-enter {
+  animation: crmDrawerSlideRtl 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.crm-sheet-enter {
+  animation: crmSheetSlideUp 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+@media (min-width: 640px) {
+  .crm-sheet-enter {
+    animation: crmDrawerSlideLtr 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  html[dir="rtl"] .crm-sheet-enter {
+    animation: crmDrawerSlideRtl 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .crm-animate-enter,
+  .crm-drawer-enter,
+  .crm-sheet-enter {
+    animation: none !important;
+  }
+}
