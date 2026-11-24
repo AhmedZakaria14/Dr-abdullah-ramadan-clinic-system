@@ -273,6 +273,63 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     }
   };
 
+  const handleWhatsAppContact = () => {
+    const activeLead = lead || initialLead;
+    if (!activeLead) return;
+
+    const contactedStage =
+      stages.find((s) => s.key?.toLowerCase() === 'contacted') ||
+      stages.find((s) => s.name_ar?.includes('تم التواصل') || s.name_en?.toLowerCase().includes('contacted'));
+
+    const targetId = activeLead.id || leadId;
+    const nowIso = new Date().toISOString();
+
+    if (contactedStage) {
+      setLead((prev) =>
+        prev
+          ? {
+              ...prev,
+              status_id: contactedStage.id,
+              status_key: contactedStage.key,
+              status_name_ar: contactedStage.name_ar,
+              status_name_en: contactedStage.name_en,
+              status_color: contactedStage.color,
+              is_read: 1,
+              read_at: prev.read_at || nowIso,
+              last_contact_at: nowIso,
+            }
+          : prev
+      );
+    }
+
+    apiRequest<{ lead?: Lead; statusChanged?: boolean }>(
+      `/businesses/${businessId}/leads/${encodeURIComponent(targetId)}/whatsapp-contact`,
+      {
+        method: 'POST',
+        keepalive: true,
+        body: JSON.stringify(buildHintsPayload(activeLead)),
+      }
+    )
+      .then(async (res) => {
+        if (res?.lead) {
+          setLead((prev) => (prev ? { ...prev, ...res.lead } : res.lead!));
+        }
+        if (res?.statusChanged) {
+          onNotify(
+            isAr
+              ? 'تم تحويل الحالة تلقائياً إلى "تم التواصل" بعد فتح واتساب'
+              : 'Status automatically updated to "Contacted" after opening WhatsApp',
+            'success'
+          );
+        }
+        await loadDetail();
+        onUpdated();
+      })
+      .catch(() => {
+        loadDetail();
+      });
+  };
+
   const handleAssign = async (assignedToUserId: string) => {
     const targetId = lead?.id || leadId;
     try {
@@ -578,6 +635,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   href={whatsappUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={handleWhatsAppContact}
                   title={
                     isAr
                       ? `فتح واتساب برسالة جاهزة (${activeWaDialect.flag} ${activeWaDialect.dialectLabelAr})`
@@ -1125,6 +1183,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                     href={whatsappUrl}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={handleWhatsAppContact}
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 min-h-[38px] text-xs font-semibold transition-colors whitespace-nowrap"
                   >
                     <MessageSquare className="h-3.5 w-3.5" />

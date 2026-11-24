@@ -1395,6 +1395,97 @@ export function createCrmRoutes(
     res.json({ lead });
   });
 
+  // Auto-transition lead to "تم التواصل" (contacted) strictly when opening WhatsApp chat
+  router.post(
+    '/businesses/:businessId/leads/:leadId/whatsapp-contact',
+    authMiddleware,
+    requireBusinessAccess(db),
+    (req: AuthRequest, res) => {
+      const { businessId, leadId } = req.params;
+      const hints = {
+        leadCode: req.body?.leadCode,
+        externalRowId: req.body?.externalRowId,
+        phone: req.body?.phone,
+      };
+      const existing = resolveLeadRecord(db, businessId, leadId, hints);
+      if (!existing) return res.status(404).json({ error: 'Lead not found' });
+
+      if (req.membership?.role === 'employee' && existing.assigned_to_user_id !== req.authUser!.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const canonicalLeadId = existing.id;
+      const now = new Date().toISOString();
+      const validActorId = resolveValidUserId(db, req.authUser?.id);
+
+      const contactedStage =
+        (db
+          .prepare("SELECT * FROM lead_statuses WHERE business_id = ? AND LOWER(key) = 'contacted' LIMIT 1")
+          .get(businessId) as any) ||
+        (db
+          .prepare(
+            "SELECT * FROM lead_statuses WHERE business_id = ? AND (name_ar LIKE '%تم التواصل%' OR LOWER(name_en) LIKE '%contacted%') ORDER BY sort_order ASC LIMIT 1"
+          )
+          .get(businessId) as any);
+
+      let statusChanged = false;
+      if (contactedStage && existing.status_id !== contactedStage.id) {
+        changeLeadStatus(db, {
+          businessId,
+          leadId: canonicalLeadId,
+          toStatusId: contactedStage.id,
+          actorUserId: req.authUser?.id,
+          note: 'تم التحويل تلقائياً إلى تم التواصل بعد فتح شات واتساب',
+          hints,
+        });
+        db.prepare(`
+          UPDATE leads
+          SET last_contact_at = ?,
+              updated_at = ?
+          WHERE id = ? AND business_id = ?
+        `).run(now, now, canonicalLeadId, businessId);
+        statusChanged = true;
+      } else {
+        db.prepare(`
+          UPDATE leads
+          SET last_contact_at = ?,
+              is_read = 1,
+              read_at = COALESCE(read_at, ?),
+              read_by_user_id = COALESCE(read_by_user_id, ?),
+              updated_at = ?
+          WHERE id = ? AND business_id = ?
+        `).run(now, now, validActorId, now, canonicalLeadId, businessId);
+      }
+
+      db.prepare(`
+        INSERT INTO lead_activities (id, business_id, lead_id, actor_user_id, activity_type, description_ar, description_en, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, 'whatsapp_opened', ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        businessId,
+        canonicalLeadId,
+        validActorId,
+        statusChanged
+          ? 'تم فتح شات واتساب مع العميل وتحويل الحالة تلقائياً إلى "تم التواصل"'
+          : 'تم فتح شات واتساب مع العميل',
+        statusChanged
+          ? 'Opened WhatsApp chat with lead and automatically updated status to "Contacted"'
+          : 'Opened WhatsApp chat with lead',
+        JSON.stringify({
+          channel: 'whatsapp',
+          autoStatusChanged: statusChanged,
+          toStatusId: contactedStage?.id || null,
+          toStatusKey: contactedStage?.key || null,
+        }),
+        now
+      );
+
+      const updated = resolveLeadRecord(db, businessId, canonicalLeadId);
+      broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
+      res.json({ lead: updated, statusChanged, contactedStage: contactedStage || null });
+    }
+  );
+
   // Update Lead Dental Treatment Progress (Consultation, Root Canal, Orthodontics, Completed)
   router.post(
     '/businesses/:businessId/leads/:leadId/treatment-progress',
