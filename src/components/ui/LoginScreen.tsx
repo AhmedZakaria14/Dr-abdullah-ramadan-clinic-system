@@ -45,6 +45,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return;
     }
 
+    const normalizedUsername = username
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+      .trim()
+      .replace(/^@([^@]+)$/, '$1');
+
     setSubmitting(true);
     setErrorMsg(null);
     setAuthToken(null);
@@ -53,7 +59,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         method: 'POST',
         skipAuthRedirect: true,
         body: JSON.stringify({
-          username: username.trim(),
+          username: normalizedUsername,
           password,
         }),
       });

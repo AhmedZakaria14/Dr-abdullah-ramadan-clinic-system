@@ -12,6 +12,9 @@ import {
   UserCheck,
   ShieldAlert,
   X,
+  Eye,
+  EyeOff,
+  Copy,
 } from 'lucide-react';
 import {
   AccountSlot,
@@ -58,10 +61,16 @@ export const TeamView: React.FC<TeamViewProps> = ({
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [accountSlot, setAccountSlot] = useState<AccountSlot>('moderator');
   const [submitting, setSubmitting] = useState(false);
+  const [lastCreatedAccount, setLastCreatedAccount] = useState<{
+    username: string;
+    email: string;
+    slot: AccountSlot;
+  } | null>(null);
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -69,7 +78,16 @@ export const TeamView: React.FC<TeamViewProps> = ({
 
   const [resetMemberId, setResetMemberId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [savingReset, setSavingReset] = useState(false);
+
+  const normalizeUsernameInput = (raw: string) => {
+    const asciiDigits = raw
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+    const trimmed = asciiDigits.trim().toLowerCase();
+    return trimmed.startsWith('@') && !trimmed.slice(1).includes('@') ? trimmed.slice(1).trim() : trimmed;
+  };
 
   const resolveMemberSlot = (member: TeamMember, isOwnerRow: boolean): AccountSlot => {
     if (isOwnerRow) return 'manager';
@@ -79,7 +97,7 @@ export const TeamView: React.FC<TeamViewProps> = ({
 
   const handleCreateOrUpdateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUsername = username.trim().toLowerCase();
+    const cleanUsername = normalizeUsernameInput(username);
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanUsername && !cleanEmail) return;
     if (cleanUsername && !/^[a-z0-9._-]{3,32}$/.test(cleanUsername)) {
@@ -104,7 +122,7 @@ export const TeamView: React.FC<TeamViewProps> = ({
 
     setSubmitting(true);
     try {
-      await apiRequest(`/businesses/${business.id}/members/invite`, {
+      const res = await apiRequest<{ member?: TeamMember }>(`/businesses/${business.id}/members/invite`, {
         method: 'POST',
         body: JSON.stringify({
           username: cleanUsername || undefined,
@@ -116,25 +134,34 @@ export const TeamView: React.FC<TeamViewProps> = ({
         }),
       });
 
+      const savedUsername = res?.member?.username || cleanUsername || resolvedEmail.split('@')[0];
+      const savedEmail = res?.member?.invited_email || resolvedEmail;
+
       void syncAuthorizedAccountToFirestore({
-        email: resolvedEmail,
-        displayName: displayName.trim() || cleanUsername || resolvedEmail.split('@')[0],
+        email: savedEmail,
+        displayName: displayName.trim() || savedUsername,
         accountType: accountSlot,
         status: 'active',
       });
 
+      setLastCreatedAccount({
+        username: savedUsername,
+        email: savedEmail,
+        slot: accountSlot,
+      });
       setUsername('');
       setPassword('');
+      setShowCreatePassword(false);
       setEmail('');
       setDisplayName('');
       onNotify(
         isAr
           ? accountSlot === 'moderator'
-            ? `تم إنشاء حساب الموديراتور (${cleanUsername || cleanEmail}) بصلاحيات متابعة الليدز وربطه بقاعدة البيانات`
-            : `تم حفظ حساب المدير (${cleanUsername || cleanEmail}) بصلاحية كاملة في قاعدة البيانات`
+            ? `تم إنشاء حساب الموديراتور (${savedUsername}) بنجاح وجاهز لتسجيل الدخول فوراً`
+            : `تم حفظ حساب المدير (${savedUsername}) بنجاح وجاهز لتسجيل الدخول فوراً`
           : accountSlot === 'moderator'
-            ? `Moderator account (${cleanUsername || cleanEmail}) created with lead follow-up permissions`
-            : `Manager account (${cleanUsername || cleanEmail}) saved with full access`,
+            ? `Moderator account (${savedUsername}) created and ready to sign in`
+            : `Manager account (${savedUsername}) saved and ready to sign in`,
         'success'
       );
       onRefresh();
@@ -384,28 +411,47 @@ export const TeamView: React.FC<TeamViewProps> = ({
             )}
           </div>
 
-          <form onSubmit={handleCreateOrUpdateAccount} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+          <form onSubmit={handleCreateOrUpdateAccount} autoComplete="off" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
             <input
               type="text"
               required
               dir="ltr"
+              name="new_staff_username"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder={isAr ? 'اسم المستخدم (مثال: mod1)' : 'Username (e.g. mod1)'}
               className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm"
             />
-            <input
-              type="password"
-              required
-              minLength={6}
-              dir="ltr"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={isAr ? 'كلمة المرور (6+ أحرف)' : 'Password (6+ chars)'}
-              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm"
-            />
+            <div className="relative">
+              <input
+                type={showCreatePassword ? 'text' : 'password'}
+                required
+                minLength={6}
+                dir="ltr"
+                name="new_staff_password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={isAr ? 'كلمة المرور (6+ أحرف)' : 'Password (6+ chars)'}
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-3 pe-9 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => setShowCreatePassword((v) => !v)}
+                className="absolute top-1/2 -translate-y-1/2 end-1.5 p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                aria-label={showCreatePassword ? 'Hide password' : 'Show password'}
+              >
+                {showCreatePassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
             <input
               type="text"
+              name="new_staff_display_name"
+              autoComplete="off"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder={isAr ? 'الاسم المعروض (مثال: سارة - موديراتور)' : 'Display name'}
@@ -414,6 +460,8 @@ export const TeamView: React.FC<TeamViewProps> = ({
             <input
               type="email"
               dir="ltr"
+              name="new_staff_email"
+              autoComplete="off"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder={isAr ? 'البريد (اختياري)' : 'Email (optional)'}
@@ -449,6 +497,41 @@ export const TeamView: React.FC<TeamViewProps> = ({
                     : 'Add Manager'}
             </button>
           </form>
+
+          {lastCreatedAccount && (
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/25 px-3.5 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-emerald-900 dark:text-emerald-200">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span>
+                  {isAr ? 'تم حفظ الحساب بنجاح — اسم المستخدم للدخول:' : 'Account saved — login username:'}
+                </span>
+                <code className="rounded bg-white dark:bg-slate-900 px-2 py-0.5 font-mono font-bold text-slate-900 dark:text-white border border-emerald-200 dark:border-emerald-800" dir="ltr">
+                  {lastCreatedAccount.username}
+                </code>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(lastCreatedAccount.username).catch(() => {});
+                    onNotify(isAr ? 'تم نسخ اسم المستخدم' : 'Username copied', 'info');
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-50"
+                >
+                  <Copy className="h-3 w-3" />
+                  <span>{isAr ? 'نسخ' : 'Copy'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLastCreatedAccount(null)}
+                  className="p-1 text-emerald-700/70 hover:text-emerald-900 dark:text-emerald-300"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Dynamic Role Permissions Preview */}
           {accountSlot === 'moderator' ? (
@@ -587,15 +670,26 @@ export const TeamView: React.FC<TeamViewProps> = ({
 
                 {resetMemberId === m.id && isAdmin && !isOwnerRow && (
                   <div className="pt-2 flex items-center gap-2">
-                    <input
-                      type="password"
-                      dir="ltr"
-                      minLength={6}
-                      value={resetPasswordValue}
-                      onChange={(e) => setResetPasswordValue(e.target.value)}
-                      placeholder={isAr ? 'كلمة المرور الجديدة (6+)' : 'New password (6+)'}
-                      className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 min-h-[38px] text-xs"
-                    />
+                    <div className="relative flex-1">
+                      <input
+                        type={showResetPassword ? 'text' : 'password'}
+                        dir="ltr"
+                        minLength={6}
+                        autoComplete="new-password"
+                        value={resetPasswordValue}
+                        onChange={(e) => setResetPasswordValue(e.target.value)}
+                        placeholder={isAr ? 'كلمة المرور الجديدة (6+)' : 'New password (6+)'}
+                        className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-2.5 pe-8 min-h-[38px] text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowResetPassword((v) => !v)}
+                        className="absolute top-1/2 -translate-y-1/2 end-1.5 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                        aria-label={showResetPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showResetPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
                     <button
                       type="button"
                       disabled={savingReset}
@@ -749,15 +843,26 @@ export const TeamView: React.FC<TeamViewProps> = ({
                                 ? `تعيين كلمة مرور جديدة للحساب (${m.username || m.invited_email}):`
                                 : `Set new password for (${m.username || m.invited_email}):`}
                             </span>
-                            <input
-                              type="password"
-                              dir="ltr"
-                              minLength={6}
-                              value={resetPasswordValue}
-                              onChange={(e) => setResetPasswordValue(e.target.value)}
-                              placeholder={isAr ? 'كلمة المرور الجديدة (6+ أحرف)' : 'New password (6+ chars)'}
-                              className="w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1 text-xs"
-                            />
+                            <div className="relative">
+                              <input
+                                type={showResetPassword ? 'text' : 'password'}
+                                dir="ltr"
+                                minLength={6}
+                                autoComplete="new-password"
+                                value={resetPasswordValue}
+                                onChange={(e) => setResetPasswordValue(e.target.value)}
+                                placeholder={isAr ? 'كلمة المرور الجديدة (6+ أحرف)' : 'New password (6+ chars)'}
+                                className="w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 ps-2.5 pe-8 py-1 text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowResetPassword((v) => !v)}
+                                className="absolute top-1/2 -translate-y-1/2 end-1.5 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                aria-label={showResetPassword ? 'Hide password' : 'Show password'}
+                              >
+                                {showResetPassword ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                              </button>
+                            </div>
                             <button
                               type="button"
                               disabled={savingReset}

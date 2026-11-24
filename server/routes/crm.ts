@@ -11,7 +11,10 @@ import {
   TokenVerifier,
   clearAccountRevocation,
   defaultTokenVerifier,
+  exportEncryptedAccountsVault,
   hashPassword,
+  hydrateAccountsFromEncryptedVault,
+  normalizeLoginIdentifier,
   recordAccountRevocation,
   removeAccountFromFirestore,
   requireBusinessAccess,
@@ -56,7 +59,14 @@ export function createCrmRoutes(
 
   // Traditional Username & Password Login
   router.post('/auth/login', (req, res) => {
-    const rawUsername = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+    const incomingVault =
+      (typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null) ||
+      (typeof req.body?.accountVault === 'string' ? req.body.accountVault : null);
+    if (incomingVault) {
+      hydrateAccountsFromEncryptedVault(db, incomingVault);
+    }
+
+    const rawUsername = typeof req.body?.username === 'string' ? normalizeLoginIdentifier(req.body.username) : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     if (!rawUsername || !password) {
@@ -79,7 +89,12 @@ export function createCrmRoutes(
     const clinicExists = db.prepare('SELECT id FROM businesses WHERE id = ?').get(CLINIC_WORKSPACE_ID);
     if (clinicExists) {
       const existingMembership = db
-        .prepare('SELECT id, role, status, account_slot FROM business_memberships WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = ?)')
+        .prepare(
+          `SELECT id, user_id, role, status, account_slot FROM business_memberships
+           WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?))
+           ORDER BY CASE WHEN status = 'active' THEN 0 WHEN status = 'invited' THEN 1 ELSE 2 END, updated_at DESC
+           LIMIT 1`
+        )
         .get(CLINIC_WORKSPACE_ID, userRow.id, String(userRow.email || '').toLowerCase()) as any;
 
       if (!existingMembership && isOwner) {
@@ -113,6 +128,7 @@ export function createCrmRoutes(
       .prepare(
         `SELECT account_slot, role FROM business_memberships
          WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
+         ORDER BY updated_at DESC
          LIMIT 1`
       )
       .get(CLINIC_WORKSPACE_ID, userRow.id, String(userRow.email || '').toLowerCase()) as
@@ -169,6 +185,7 @@ export function createCrmRoutes(
 
     res.json({
       token,
+      accountVault: exportEncryptedAccountsVault(db),
       user: {
         id: userRow.id,
         username: userRow.username || rawUsername,
@@ -187,6 +204,10 @@ export function createCrmRoutes(
 
   // Change Password for authenticated user
   router.post('/auth/change-password', authMiddleware, (req: AuthRequest, res) => {
+    const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
+    if (incomingVault) {
+      hydrateAccountsFromEncryptedVault(db, incomingVault);
+    }
     const { currentPassword, newPassword } = req.body || {};
     if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
       return res.status(400).json({ error: 'New password must be at least 6 characters' });
@@ -203,7 +224,7 @@ export function createCrmRoutes(
       new Date().toISOString(),
       dbUser.id
     );
-    res.json({ updated: true });
+    res.json({ updated: true, accountVault: exportEncryptedAccountsVault(db) });
   });
 
   // Current user & accessible businesses
@@ -1951,8 +1972,12 @@ export function createCrmRoutes(
     res.json({ followUp: db.prepare('SELECT * FROM follow_up_tasks WHERE id = ?').get(taskId) });
   });
 
-  // System Accounts (Manager & Accountant) + Traditional Username/Password Access
+  // System Accounts (Manager & Moderator) + Traditional Username/Password Access
   router.get('/businesses/:businessId/members', authMiddleware, requireBusinessAccess(db), (req: AuthRequest, res) => {
+    const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
+    if (incomingVault) {
+      hydrateAccountsFromEncryptedVault(db, incomingVault);
+    }
     const { businessId } = req.params;
     const members = db
       .prepare(`
@@ -1969,7 +1994,7 @@ export function createCrmRoutes(
         ORDER BY is_owner DESC, bm.created_at ASC
       `)
       .all(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId);
-    res.json({ members });
+    res.json({ members, accountVault: exportEncryptedAccountsVault(db) });
   });
 
   router.post(
@@ -1977,6 +2002,11 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
+      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
+      if (incomingVault) {
+        hydrateAccountsFromEncryptedVault(db, incomingVault);
+      }
+
       const { businessId } = req.params;
       const { email, username, password, displayName, role, accountSlot } = req.body || {};
       const validSlots = ['manager', 'moderator'];
@@ -1988,7 +2018,7 @@ export function createCrmRoutes(
       // Strictly enforce role boundaries on the server: moderators NEVER receive business_admin
       const resolvedRole: Role = resolvedSlot === 'manager' ? 'business_admin' : 'moderator';
 
-      const cleanUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
+      const cleanUsername = typeof username === 'string' ? normalizeLoginIdentifier(username) : '';
       const rawEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
       if (!rawEmail && !cleanUsername) {
         return res.status(400).json({ error: 'Username or valid email is required' });
@@ -2010,8 +2040,8 @@ export function createCrmRoutes(
       const now = new Date().toISOString();
       let existingUser = (
         cleanUsername
-          ? db.prepare('SELECT id, full_name, username, email FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?').get(cleanUsername, normalizedEmail)
-          : db.prepare('SELECT id, full_name, username, email FROM users WHERE LOWER(email) = ?').get(normalizedEmail)
+          ? db.prepare('SELECT id, full_name, username, email, password_hash FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?').get(cleanUsername, normalizedEmail)
+          : db.prepare('SELECT id, full_name, username, email, password_hash FROM users WHERE LOWER(email) = ?').get(normalizedEmail)
       ) as any;
 
       const cleanPassword = typeof password === 'string' ? password : '';
@@ -2053,21 +2083,46 @@ export function createCrmRoutes(
           now
         );
         existingUser = { id: newUserId, full_name: label, username: effectiveUsername, email: effectiveEmail };
-      } else if (existingUser && (cleanUsername || cleanPassword || displayName)) {
+      } else if (existingUser) {
+        // Ensure no username or email conflict with a DIFFERENT user before updating
+        if (cleanUsername) {
+          const usernameOwner = db
+            .prepare('SELECT id FROM users WHERE LOWER(username) = ? AND id != ?')
+            .get(cleanUsername, existingUser.id);
+          if (usernameOwner) {
+            return res.status(409).json({ error: 'This username is already taken by another account' });
+          }
+        }
+        if (rawEmail && rawEmail !== String(existingUser.email || '').toLowerCase()) {
+          const emailOwner = db
+            .prepare('SELECT id FROM users WHERE LOWER(email) = ? AND id != ?')
+            .get(rawEmail, existingUser.id);
+          if (emailOwner) {
+            return res.status(409).json({ error: 'This email is already used by another account' });
+          }
+        }
         db.prepare(`
           UPDATE users
           SET username = COALESCE(NULLIF(?, ''), username),
+              email = COALESCE(NULLIF(?, ''), email),
               password_hash = COALESCE(?, password_hash),
               full_name = COALESCE(NULLIF(?, ''), full_name),
               updated_at = ?
           WHERE id = ?
         `).run(
           cleanUsername || '',
+          rawEmail || '',
           cleanPassword ? hashPassword(cleanPassword) : null,
           displayName?.trim() || '',
           now,
           existingUser.id
         );
+        existingUser = {
+          ...existingUser,
+          username: cleanUsername || existingUser.username,
+          email: effectiveEmail,
+          full_name: displayName?.trim() || existingUser.full_name,
+        };
       }
 
       const isTargetOwner = effectiveEmail === MASTER_OWNER_EMAIL || effectiveUsername === DEFAULT_ADMIN_USERNAME;
@@ -2081,36 +2136,59 @@ export function createCrmRoutes(
         email: effectiveEmail,
       });
 
-      const id = crypto.randomUUID();
-      db.prepare(`
-        INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(business_id, invited_email) DO UPDATE SET
-          user_id = COALESCE(excluded.user_id, business_memberships.user_id),
-          account_slot = excluded.account_slot,
-          role = excluded.role,
-          display_name = COALESCE(NULLIF(excluded.display_name, ''), display_name),
-          status = 'active',
-          updated_at = excluded.updated_at
-      `).run(
-        id,
-        businessId,
-        existingUser?.id || null,
-        effectiveEmail,
-        displayName?.trim() || existingUser?.full_name || effectiveUsername || effectiveEmail.split('@')[0],
-        finalSlot,
-        finalRole,
-        existingUser ? 'active' : 'invited',
-        now,
-        now
-      );
+      // Keep one clean membership row per (business_id, user_id) so email changes never create duplicate rows
+      const existingMembershipByUser = existingUser?.id
+        ? (db
+            .prepare('SELECT id FROM business_memberships WHERE business_id = ? AND user_id = ? LIMIT 1')
+            .get(businessId, existingUser.id) as { id: string } | undefined)
+        : undefined;
+
+      const resolvedDisplayName =
+        displayName?.trim() || existingUser?.full_name || effectiveUsername || effectiveEmail.split('@')[0];
+      let membershipId = existingMembershipByUser?.id || crypto.randomUUID();
+
+      if (existingMembershipByUser) {
+        db.prepare(`
+          UPDATE business_memberships
+          SET invited_email = ?,
+              display_name = COALESCE(NULLIF(?, ''), display_name),
+              account_slot = ?,
+              role = ?,
+              status = 'active',
+              updated_at = ?
+          WHERE id = ?
+        `).run(effectiveEmail, resolvedDisplayName, finalSlot, finalRole, now, existingMembershipByUser.id);
+      } else {
+        db.prepare(`
+          INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(business_id, invited_email) DO UPDATE SET
+            user_id = COALESCE(excluded.user_id, business_memberships.user_id),
+            account_slot = excluded.account_slot,
+            role = excluded.role,
+            display_name = COALESCE(NULLIF(excluded.display_name, ''), display_name),
+            status = 'active',
+            updated_at = excluded.updated_at
+        `).run(
+          membershipId,
+          businessId,
+          existingUser?.id || null,
+          effectiveEmail,
+          resolvedDisplayName,
+          finalSlot,
+          finalRole,
+          existingUser ? 'active' : 'invited',
+          now,
+          now
+        );
+      }
 
       writeAuditLog(db, {
         businessId,
         actorUserId: req.authUser?.id,
         action: finalSlot === 'moderator' ? 'moderator_account_saved' : 'manager_account_saved',
         entityType: 'membership',
-        entityId: id,
+        entityId: membershipId,
         details: { email: effectiveEmail, username: effectiveUsername || null, accountSlot: finalSlot, role: finalRole },
         ipAddress: req.ip,
       });
@@ -2123,10 +2201,11 @@ export function createCrmRoutes(
                  CASE WHEN LOWER(bm.invited_email) = ? OR LOWER(u.username) = ? THEN 1 ELSE 0 END as is_owner
           FROM business_memberships bm
           LEFT JOIN users u ON u.id = bm.user_id
-          WHERE bm.business_id = ? AND LOWER(bm.invited_email) = ?
+          WHERE bm.business_id = ? AND (bm.user_id = ? OR LOWER(bm.invited_email) = ?)
+          LIMIT 1
         `)
-        .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId, effectiveEmail);
-      res.status(201).json({ member });
+        .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId, existingUser?.id || '', effectiveEmail);
+      res.status(201).json({ member, accountVault: exportEncryptedAccountsVault(db) });
     }
   );
 
@@ -2135,6 +2214,11 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
+      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
+      if (incomingVault) {
+        hydrateAccountsFromEncryptedVault(db, incomingVault);
+      }
+
       const { businessId, memberId } = req.params;
       const { role, status, accountSlot, displayName, email, username, password } = req.body || {};
       const existingMember = db
@@ -2143,9 +2227,9 @@ export function createCrmRoutes(
       if (!existingMember) {
         return res.status(404).json({ error: 'Account membership not found' });
       }
-      const existingUser = existingMember.user_id
+      let existingUser = existingMember.user_id
         ? (db.prepare('SELECT * FROM users WHERE id = ?').get(existingMember.user_id) as any)
-        : null;
+        : (db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(String(existingMember.invited_email || '').toLowerCase()) as any);
       const isTargetOwner =
         existingMember.invited_email?.toLowerCase() === MASTER_OWNER_EMAIL ||
         existingUser?.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME;
@@ -2158,12 +2242,21 @@ export function createCrmRoutes(
       }
 
       const now = new Date().toISOString();
-      if (existingUser && (password || (username && !isTargetOwner) || displayName)) {
-        const cleanNewUsername = typeof username === 'string' && !isTargetOwner ? username.trim().toLowerCase() : '';
-        if (cleanNewUsername && !/^[a-z0-9._-]{3,32}$/.test(cleanNewUsername)) {
-          return res.status(400).json({ error: 'Invalid username format' });
+      const cleanNewUsername = typeof username === 'string' && !isTargetOwner ? normalizeLoginIdentifier(username) : '';
+      if (cleanNewUsername && !/^[a-z0-9._-]{3,32}$/.test(cleanNewUsername)) {
+        return res.status(400).json({ error: 'Invalid username format' });
+      }
+      const cleanPass = typeof password === 'string' && password.length >= 6 ? hashPassword(password) : null;
+
+      if (existingUser && (cleanPass || cleanNewUsername || displayName)) {
+        if (cleanNewUsername) {
+          const conflict = db
+            .prepare('SELECT id FROM users WHERE LOWER(username) = ? AND id != ?')
+            .get(cleanNewUsername, existingUser.id);
+          if (conflict) {
+            return res.status(409).json({ error: 'This username is already taken by another account' });
+          }
         }
-        const cleanPass = typeof password === 'string' && password.length >= 6 ? hashPassword(password) : null;
         db.prepare(`
           UPDATE users
           SET username = COALESCE(NULLIF(?, ''), username),
@@ -2172,13 +2265,30 @@ export function createCrmRoutes(
               updated_at = ?
           WHERE id = ?
         `).run(cleanNewUsername, cleanPass, displayName?.trim() || '', now, existingUser.id);
+      } else if (!existingUser && cleanPass) {
+        // Invited member without a users row yet: create their user account immediately when password is set
+        const newUserId = crypto.randomUUID();
+        const fallbackEmail = String(existingMember.invited_email || '').trim().toLowerCase();
+        const fallbackUsername =
+          cleanNewUsername ||
+          fallbackEmail
+            .split('@')[0]
+            .replace(/[^a-z0-9._-]/g, '')
+            .slice(0, 24) ||
+          `mod_${newUserId.slice(0, 6)}`;
+        const label = displayName?.trim() || existingMember.display_name || fallbackUsername;
+        db.prepare(`
+          INSERT INTO users (id, firebase_uid, username, password_hash, email, full_name, default_language, theme, is_platform_super_admin, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'ar', 'light', 0, ?, ?)
+        `).run(newUserId, `local-${newUserId}`, fallbackUsername, cleanPass, fallbackEmail, label, now, now);
+        existingUser = { id: newUserId, username: fallbackUsername, email: fallbackEmail, full_name: label };
       }
 
       const normalizedNewEmail =
         typeof email === 'string' && email.includes('@') && !isTargetOwner ? email.trim().toLowerCase() : null;
       const linkedUser = normalizedNewEmail
         ? (db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(normalizedNewEmail) as any)
-        : null;
+        : existingUser;
 
       const validSlots = ['manager', 'moderator'];
       const nextSlot = isTargetOwner
@@ -2202,7 +2312,7 @@ export function createCrmRoutes(
             account_slot = COALESCE(?, account_slot),
             display_name = COALESCE(NULLIF(?, ''), display_name),
             invited_email = COALESCE(?, invited_email),
-            user_id = CASE WHEN ? IS NOT NULL THEN ? ELSE user_id END,
+            user_id = COALESCE(?, user_id),
             status = COALESCE(?, status),
             updated_at = ?
         WHERE id = ? AND business_id = ?
@@ -2210,7 +2320,6 @@ export function createCrmRoutes(
         nextRole,
         nextSlot,
         displayName?.trim() || '',
-        normalizedNewEmail,
         normalizedNewEmail,
         linkedUser?.id || null,
         isTargetOwner ? 'active' : status || null,
@@ -2256,6 +2365,7 @@ export function createCrmRoutes(
             WHERE bm.id = ?
           `)
           .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, memberId),
+        accountVault: exportEncryptedAccountsVault(db),
       });
     }
   );
@@ -2265,6 +2375,11 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
+      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
+      if (incomingVault) {
+        hydrateAccountsFromEncryptedVault(db, incomingVault);
+      }
+
       const { businessId, memberId } = req.params;
       const existingMember = db
         .prepare('SELECT * FROM business_memberships WHERE id = ? AND business_id = ?')
@@ -2315,7 +2430,7 @@ export function createCrmRoutes(
 
       void removeAccountFromFirestore(existingUser?.id, existingMember.invited_email);
       void syncSystemAccountsToFirestore(db);
-      res.json({ deleted: true });
+      res.json({ deleted: true, accountVault: exportEncryptedAccountsVault(db) });
     }
   );
 
