@@ -28,6 +28,14 @@ import { CustomField, FollowUpTask, Language, Lead, PipelineStage, Role, TeamMem
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
+import {
+  buildLeadWhatsAppMessage,
+  buildLeadWhatsAppUrl,
+  detectLeadDialect,
+  DIALECT_OPTIONS,
+  DialectCode,
+  resolveLeadWhatsAppNumber,
+} from '../../lib/whatsappMessage';
 
 interface LeadDetailViewProps {
   lang: Language;
@@ -124,6 +132,8 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   const [answersTab, setAnswersTab] = useState<'structured' | 'raw'>('structured');
   const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
   const [togglingRead, setTogglingRead] = useState(false);
+  const [selectedDialect, setSelectedDialect] = useState<DialectCode | 'auto'>('auto');
+  const [customWaDraft, setCustomWaDraft] = useState<string | null>(null);
   const notifiedReadLeadRef = React.useRef<string | null>(null);
 
   const buildHintsPayload = (sourceLead?: Lead | null) => {
@@ -175,6 +185,8 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   };
 
   useEffect(() => {
+    setSelectedDialect('auto');
+    setCustomWaDraft(null);
     if (initialLead) {
       setLead({
         ...initialLead,
@@ -349,7 +361,19 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   const customValues = JSON.parse(lead.custom_values_json || '{}');
   const primaryPhone = lead.phone_e164 || lead.phone || '';
   const whatsappFormInput = typeof customValues.whatsapp_input === 'string' ? customValues.whatsapp_input : '';
-  const whatsappDigits = (primaryPhone || whatsappFormInput).replace(/\D/g, '');
+  const whatsappDigits = resolveLeadWhatsAppNumber(lead);
+  const autoDetectedDialect = detectLeadDialect(lead);
+  const { message: autoWaMessage, dialect: activeWaDialect } = buildLeadWhatsAppMessage(
+    lead,
+    selectedDialect === 'auto' ? undefined : selectedDialect
+  );
+  const effectiveWaMessage = customWaDraft !== null ? customWaDraft : autoWaMessage;
+  const whatsappUrl = whatsappDigits
+    ? buildLeadWhatsAppUrl(lead, {
+        dialectOverride: selectedDialect === 'auto' ? undefined : selectedDialect,
+        customMessage: effectiveWaMessage,
+      })
+    : '';
 
   const companyName = typeof customValues.company_name === 'string' ? customValues.company_name.trim() : '';
   const jobTitle = typeof customValues.job_title === 'string' ? customValues.job_title.trim() : '';
@@ -476,11 +500,16 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   <span>{t.callCustomer}</span>
                 </a>
               )}
-              {whatsappDigits && (
+              {whatsappUrl && (
                 <a
-                  href={`https://wa.me/${whatsappDigits}`}
+                  href={whatsappUrl}
                   target="_blank"
                   rel="noreferrer"
+                  title={
+                    isAr
+                      ? `فتح واتساب برسالة جاهزة (${activeWaDialect.flag} ${activeWaDialect.dialectLabelAr})`
+                      : `Open WhatsApp with prepared message (${activeWaDialect.flag} ${activeWaDialect.dialectLabelEn})`
+                  }
                   className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 px-3.5 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-all duration-150 whitespace-nowrap"
                 >
                   <MessageSquare className="h-3.5 w-3.5" />
@@ -990,6 +1019,93 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Prepared Personalized WhatsApp Message Card */}
+          {whatsappUrl && (
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-50/60 dark:bg-slate-950/40">
+                <div className="flex items-center gap-2 min-w-0">
+                  <MessageSquare className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    {isAr ? 'رسالة الواتساب الجاهزة' : 'Prepared WhatsApp Message'}
+                  </h3>
+                </div>
+                <select
+                  aria-label={isAr ? 'لهجة الرسالة' : 'Message dialect'}
+                  value={selectedDialect}
+                  onChange={(e) => {
+                    const nextVal = e.target.value as DialectCode | 'auto';
+                    setSelectedDialect(nextVal);
+                    setCustomWaDraft(null);
+                  }}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-200 max-w-[175px]"
+                >
+                  <option value="auto">
+                    {isAr
+                      ? `تلقائي: ${autoDetectedDialect.flag} ${autoDetectedDialect.dialectLabelAr}`
+                      : `Auto: ${autoDetectedDialect.flag} ${autoDetectedDialect.dialectLabelEn}`}
+                  </option>
+                  {DIALECT_OPTIONS.map((opt) => (
+                    <option key={opt.code} value={opt.code}>
+                      {opt.flag} {isAr ? `${opt.countryAr} — ${opt.dialectLabelAr}` : `${opt.countryEn} — ${opt.dialectLabelEn}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span>
+                    {activeWaDialect.flag}{' '}
+                    {isAr
+                      ? `${activeWaDialect.countryAr} · ${activeWaDialect.dialectLabelAr}`
+                      : `${activeWaDialect.countryEn} · ${activeWaDialect.dialectLabelEn}`}
+                  </span>
+                  {customWaDraft !== null && (
+                    <button
+                      type="button"
+                      onClick={() => setCustomWaDraft(null)}
+                      className="text-[#0077B6] dark:text-cyan-400 hover:underline font-medium"
+                    >
+                      {isAr ? 'استعادة النص الجاهز' : 'Reset text'}
+                    </button>
+                  )}
+                </div>
+
+                <textarea
+                  rows={7}
+                  dir={activeWaDialect.code === 'EN_INTL' ? 'ltr' : 'rtl'}
+                  value={effectiveWaMessage}
+                  onChange={(e) => setCustomWaDraft(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-950/70 p-3 text-xs leading-relaxed text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/70 resize-y"
+                />
+
+                <div className="flex items-center gap-2">
+                  <a
+                    href={whatsappUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 min-h-[38px] text-xs font-semibold transition-colors whitespace-nowrap"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    <span>{isAr ? 'إرسال عبر واتساب' : 'Send via WhatsApp'}</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy('wa_message', effectiveWaMessage)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 min-h-[38px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+                  >
+                    {copiedKey === 'wa_message' ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                    <span>{copiedKey === 'wa_message' ? (isAr ? 'تم النسخ' : 'Copied') : isAr ? 'نسخ' : 'Copy'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Campaign Attribution */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">

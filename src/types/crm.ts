@@ -122,6 +122,16 @@ export interface Lead {
   updated_at: string;
 }
 
+export type TreatmentStageKey = 'consultation' | 'root_canal' | 'orthodontics' | 'completed';
+
+export interface TreatmentStageState {
+  completed: boolean;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+}
+
+export type TreatmentProgressMap = Partial<Record<TreatmentStageKey, TreatmentStageState>>;
+
 export interface FollowUpTask {
   id: string;
   business_id: string;

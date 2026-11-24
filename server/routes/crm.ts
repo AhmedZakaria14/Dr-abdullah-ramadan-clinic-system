@@ -1340,6 +1340,123 @@ export function createCrmRoutes(
     res.json({ lead });
   });
 
+  // Update Lead Dental Treatment Progress (Consultation, Root Canal, Orthodontics, Completed)
+  router.post(
+    '/businesses/:businessId/leads/:leadId/treatment-progress',
+    authMiddleware,
+    requireBusinessAccess(db),
+    (req: AuthRequest, res) => {
+      const { businessId, leadId } = req.params;
+      const hints = {
+        leadCode: req.body?.leadCode,
+        externalRowId: req.body?.externalRowId,
+        phone: req.body?.phone,
+      };
+      const existing = resolveLeadRecord(db, businessId, leadId, hints);
+      if (!existing) return res.status(404).json({ error: 'Lead not found' });
+
+      const canonicalLeadId = existing.id;
+
+      if (req.membership?.role === 'employee' && existing.assigned_to_user_id !== req.authUser!.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const STAGE_LABELS: Record<string, { ar: string; en: string }> = {
+        consultation: { ar: 'الاستشارة والكشف', en: 'Consultation' },
+        root_canal: { ar: 'علاج الجذور', en: 'Root Canal' },
+        orthodontics: { ar: 'تقويم الأسنان', en: 'Orthodontics' },
+        completed: { ar: 'مكتمل', en: 'Completed' },
+      };
+
+      const { stageKey, completed, reset } = req.body || {};
+      const now = new Date().toISOString();
+      const validActorId = resolveValidUserId(db, req.authUser?.id);
+      const actorDisplayName = req.authUser?.fullName || req.authUser?.email || 'Clinic Staff';
+
+      let prevCustom: Record<string, any> = {};
+      try {
+        prevCustom = JSON.parse(existing.custom_values_json || '{}') || {};
+      } catch {
+        prevCustom = {};
+      }
+
+      const prevProgress: Record<string, { completed: boolean; updatedAt?: string | null; updatedBy?: string | null }> =
+        prevCustom.treatment_progress && typeof prevCustom.treatment_progress === 'object'
+          ? { ...prevCustom.treatment_progress }
+          : {};
+
+      let descriptionAr = '';
+      let descriptionEn = '';
+      let activityMeta: Record<string, any> = {};
+
+      if (reset === true) {
+        for (const k of Object.keys(STAGE_LABELS)) {
+          delete prevProgress[k];
+        }
+        descriptionAr = 'تمت إعادة تعيين مراحل تقدم العلاج';
+        descriptionEn = 'Reset treatment progress stages';
+        activityMeta = { reset: true };
+      } else {
+        if (typeof stageKey !== 'string' || !STAGE_LABELS[stageKey]) {
+          return res.status(400).json({ error: 'Invalid treatment stageKey' });
+        }
+        if (typeof completed !== 'boolean') {
+          return res.status(400).json({ error: 'completed boolean is required' });
+        }
+
+        prevProgress[stageKey] = {
+          completed,
+          updatedAt: completed ? now : null,
+          updatedBy: completed ? actorDisplayName : null,
+        };
+
+        const doneCount = Object.keys(STAGE_LABELS).filter((k) => Boolean(prevProgress[k]?.completed)).length;
+        const label = STAGE_LABELS[stageKey];
+        descriptionAr = completed
+          ? `تقدم العلاج: تم إنجاز مرحلة "${label.ar}" (${doneCount}/4)`
+          : `تقدم العلاج: تم إلغاء إنجاز مرحلة "${label.ar}" (${doneCount}/4)`;
+        descriptionEn = completed
+          ? `Treatment progress: marked "${label.en}" complete (${doneCount}/4)`
+          : `Treatment progress: unmarked "${label.en}" (${doneCount}/4)`;
+        activityMeta = { stageKey, completed, completedCount: doneCount, totalStages: 4 };
+      }
+
+      const nextCustom = {
+        ...prevCustom,
+        treatment_progress: prevProgress,
+      };
+
+      db.prepare(`
+        UPDATE leads
+        SET custom_values_json = ?,
+            last_contact_at = COALESCE(last_contact_at, ?),
+            is_read = 1,
+            read_at = COALESCE(read_at, ?),
+            read_by_user_id = COALESCE(read_by_user_id, ?),
+            updated_at = ?
+        WHERE id = ? AND business_id = ?
+      `).run(JSON.stringify(nextCustom), now, now, validActorId, now, canonicalLeadId, businessId);
+
+      db.prepare(`
+        INSERT INTO lead_activities (id, business_id, lead_id, actor_user_id, activity_type, description_ar, description_en, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, 'treatment_progress_updated', ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        businessId,
+        canonicalLeadId,
+        validActorId,
+        descriptionAr,
+        descriptionEn,
+        JSON.stringify(activityMeta),
+        now
+      );
+
+      const updated = resolveLeadRecord(db, businessId, canonicalLeadId);
+      broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
+      res.json({ lead: updated, treatmentProgress: prevProgress });
+    }
+  );
+
   // Assign Lead to Employee
   router.post(
     '/businesses/:businessId/leads/:leadId/assign',

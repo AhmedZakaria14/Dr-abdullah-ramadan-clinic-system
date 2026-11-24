@@ -26,11 +26,15 @@ import {
   Mail,
   CheckCheck,
   EyeOff,
+  FileText,
+  Loader2,
 } from 'lucide-react';
 import { CustomField, Language, Lead, PipelineStage, Role, TeamMember } from '../../types/crm';
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
+import { exportLeadsToPdf } from '../../lib/pdfExport';
+import { buildLeadWhatsAppUrl, detectLeadDialect } from '../../lib/whatsappMessage';
 
 interface LeadsViewProps {
   lang: Language;
@@ -136,6 +140,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [updatingLeadId, setUpdatingLeadId] = useState<string | null>(null);
   const [markingAllRead, setMarkingAllRead] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [peekLead, setPeekLead] = useState<Lead | null>(null);
 
   const topScrollRef = useRef<HTMLDivElement | null>(null);
@@ -563,6 +568,119 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     }
   };
 
+  const extraCustomCols = customFields
+    .filter((cf) => !SKIPPED_TABLE_CUSTOM_KEYS.has(cf.field_key))
+    .slice(0, 2);
+
+  const handleExportPdf = async () => {
+    if (exportingPdf) return;
+    if (leads.length === 0) {
+      onNotify(isAr ? 'لا يوجد عملاء في القائمة الحالية للتصدير' : 'No leads in the current list to export', 'info');
+      return;
+    }
+
+    setExportingPdf(true);
+    try {
+      const isSelectionOnly = selectedIds.length > 0;
+      let exportLeadsList: Lead[] = [];
+      let totalMatching = total;
+
+      if (isSelectionOnly) {
+        exportLeadsList = leads.filter((l) => selectedIds.includes(l.id));
+        totalMatching = exportLeadsList.length;
+      } else if (total <= leads.length) {
+        exportLeadsList = leads;
+      } else {
+        // Fetch all matching leads for the active filters/sort (up to 300 rows for crisp client-side PDF speed)
+        const maxToFetch = Math.min(total, 300);
+        const pagesNeeded = Math.ceil(maxToFetch / 100);
+        const fetched: Lead[] = [];
+        for (let p = 1; p <= pagesNeeded; p++) {
+          const qs = new URLSearchParams({
+            page: String(p),
+            pageSize: '100',
+            sortBy,
+            sortDir,
+          });
+          if (debouncedSearch) qs.set('q', debouncedSearch);
+          if (statusFilter) qs.set('statusId', statusFilter);
+          if (readState) qs.set('readState', readState);
+          if (sourceFilter) qs.set('source', sourceFilter);
+          if (assignedFilter) qs.set('assignedTo', assignedFilter);
+
+          const res = await apiRequest<{ leads: Lead[]; total: number }>(
+            `/businesses/${businessId}/leads?${qs.toString()}`
+          );
+          if (Array.isArray(res.leads)) {
+            fetched.push(...res.leads);
+          }
+          totalMatching = typeof res.total === 'number' ? res.total : totalMatching;
+          if (!res.leads || res.leads.length < 100) break;
+        }
+        exportLeadsList = fetched.length > 0 ? fetched : leads;
+      }
+
+      const filterSummary: string[] = [];
+      if (debouncedSearch) {
+        filterSummary.push(`${isAr ? 'بحث' : 'Search'}: "${debouncedSearch}"`);
+      }
+      if (statusFilter) {
+        const st = stages.find((s) => s.id === statusFilter);
+        if (st) filterSummary.push(`${t.status}: ${isAr ? st.name_ar : st.name_en}`);
+      }
+      if (readState) {
+        filterSummary.push(
+          readState === 'unread'
+            ? isAr
+              ? 'جديد (غير مقروء)'
+              : 'New (Unread)'
+            : isAr
+              ? 'مقروء'
+              : 'Read'
+        );
+      }
+      if (sourceFilter) {
+        filterSummary.push(`${t.source}: ${formatSourceLabel(sourceFilter, isAr)}`);
+      }
+      if (assignedFilter) {
+        if (assignedFilter === 'unassigned') {
+          filterSummary.push(`${t.assignedEmployee}: ${t.unassigned}`);
+        } else {
+          const m = members.find((mem) => mem.user_id === assignedFilter);
+          if (m) {
+            filterSummary.push(
+              `${t.assignedEmployee}: ${m.full_name || m.display_name || m.invited_email}`
+            );
+          }
+        }
+      }
+
+      const result = await exportLeadsToPdf({
+        leads: exportLeadsList,
+        totalMatching,
+        lang,
+        visibleCols,
+        extraCustomCols,
+        filterSummary,
+        isSelectionOnly,
+      });
+
+      onNotify(
+        isAr
+          ? `تم تصدير ملف PDF جاهز للطباعة (${result.exportedCount} عميل · ${result.pageCount} صفحة)`
+          : `Exported printable PDF (${result.exportedCount} leads · ${result.pageCount} ${result.pageCount === 1 ? 'page' : 'pages'})`,
+        'success'
+      );
+    } catch (err: any) {
+      onNotify(
+        err?.message || (isAr ? 'تعذر إنشاء ملف PDF' : 'Failed to generate PDF'),
+        'error'
+      );
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   const toggleAll = () => {
     if (selectedIds.length === leads.length) {
       setSelectedIds([]);
@@ -571,14 +689,10 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     }
   };
 
-  const extraCustomCols = customFields
-    .filter((cf) => !SKIPPED_TABLE_CUSTOM_KEYS.has(cf.field_key))
-    .slice(0, 2);
-
   const peekCustomVals = peekLead ? safeParseJson(peekLead.custom_values_json) : {};
   const peekPhone = peekLead ? peekLead.phone_e164 || peekLead.phone || '' : '';
-  const peekWhatsappInput = typeof peekCustomVals.whatsapp_input === 'string' ? peekCustomVals.whatsapp_input : '';
-  const peekWhatsappDigits = (peekPhone || peekWhatsappInput).replace(/\D/g, '');
+  const peekWhatsappUrl = peekLead ? buildLeadWhatsAppUrl(peekLead) : '';
+  const peekWhatsappDialect = peekLead ? detectLeadDialect(peekLead) : null;
   const peekInboxUrl =
     typeof peekCustomVals.inbox_url === 'string' && peekCustomVals.inbox_url.startsWith('http')
       ? peekCustomVals.inbox_url
@@ -677,23 +791,48 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => handleExport('csv')}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 min-h-[42px] sm:min-h-[36px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
-            >
-              <Download className="h-3.5 w-3.5" />
-              <span>CSV</span>
-            </button>
+            <div className="col-span-2 grid grid-cols-3 gap-2 sm:contents">
+              <button
+                type="button"
+                onClick={() => handleExport('csv')}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 min-h-[42px] sm:min-h-[36px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>CSV</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleExport('xlsx')}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 min-h-[42px] sm:min-h-[36px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
-            >
-              <FileSpreadsheet className="h-3.5 w-3.5" />
-              <span>Excel</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => handleExport('xlsx')}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 min-h-[42px] sm:min-h-[36px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                <span>Excel</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={exportingPdf || loading || leads.length === 0}
+                onClick={handleExportPdf}
+                title={
+                  selectedIds.length > 0
+                    ? isAr
+                      ? `تصدير ${selectedIds.length} عميل محدد إلى PDF قابل للطباعة`
+                      : `Export ${selectedIds.length} selected leads to printable PDF`
+                    : isAr
+                      ? 'تصدير قائمة العملاء الحالية إلى PDF قابل للطباعة'
+                      : 'Export current lead list to printable PDF'
+                }
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-sky-200 dark:border-sky-800/80 bg-sky-50/70 dark:bg-sky-950/30 px-3 min-h-[42px] sm:min-h-[36px] text-xs font-semibold text-[#0077B6] dark:text-cyan-300 hover:bg-sky-100/80 dark:hover:bg-sky-950/60 transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {exportingPdf ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                ) : (
+                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span>{exportingPdf ? (isAr ? 'جاري التصدير...' : 'PDF...') : 'PDF'}</span>
+              </button>
+            </div>
 
             <button
               type="button"
@@ -936,7 +1075,8 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
               {leads.map((lead) => {
                 const customVals = safeParseJson(lead.custom_values_json);
                 const primaryPhone = lead.phone_e164 || lead.phone || '';
-                const whatsappNum = primaryPhone.replace(/\D/g, '');
+                const whatsappUrl = buildLeadWhatsAppUrl(lead);
+                const whatsappDialect = whatsappUrl ? detectLeadDialect(lead) : null;
                 const companyName = typeof customVals.company_name === 'string' ? customVals.company_name.trim() : '';
                 const specsPreview =
                   (typeof customVals.medical_notes === 'string' && customVals.medical_notes.trim()) ||
@@ -1077,13 +1217,20 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                         ) : (
                           <span className="text-[11px] text-slate-400">—</span>
                         )}
-                        {whatsappNum && (
+                        {whatsappUrl && (
                           <a
-                            href={`https://wa.me/${whatsappNum}`}
+                            href={whatsappUrl}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center justify-center rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 min-h-[34px] min-w-[34px]"
                             aria-label="WhatsApp"
+                            title={
+                              whatsappDialect
+                                ? isAr
+                                  ? `فتح واتساب برسالة جاهزة (${whatsappDialect.flag} ${whatsappDialect.dialectLabelAr})`
+                                  : `Open WhatsApp with prepared message (${whatsappDialect.flag} ${whatsappDialect.dialectLabelEn})`
+                                : t.openWhatsApp
+                            }
                           >
                             <MessageSquare className="h-3.5 w-3.5" />
                           </a>
@@ -1230,7 +1377,8 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                 {leads.map((lead) => {
                   const customVals = safeParseJson(lead.custom_values_json);
                   const primaryPhone = lead.phone_e164 || lead.phone || '';
-                  const whatsappNum = primaryPhone.replace(/\D/g, '');
+                  const whatsappUrl = buildLeadWhatsAppUrl(lead);
+                  const whatsappDialect = whatsappUrl ? detectLeadDialect(lead) : null;
                   const companyName = typeof customVals.company_name === 'string' ? customVals.company_name.trim() : '';
                   const jobTitle = typeof customVals.job_title === 'string' ? customVals.job_title.trim() : '';
                   const specsPreview =
@@ -1474,13 +1622,19 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                               <Phone className="h-3.5 w-3.5" />
                             </a>
                           )}
-                          {whatsappNum && (
+                          {whatsappUrl && (
                             <a
-                              href={`https://wa.me/${whatsappNum}`}
+                              href={whatsappUrl}
                               target="_blank"
                               rel="noreferrer"
                               className="p-1.5 rounded-md text-slate-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
-                              title={t.openWhatsApp}
+                              title={
+                                whatsappDialect
+                                  ? isAr
+                                    ? `فتح واتساب برسالة جاهزة (${whatsappDialect.flag} ${whatsappDialect.dialectLabelAr})`
+                                    : `Open WhatsApp with prepared message (${whatsappDialect.flag} ${whatsappDialect.dialectLabelEn})`
+                                  : t.openWhatsApp
+                              }
                             >
                               <MessageSquare className="h-3.5 w-3.5" />
                             </a>
@@ -1835,11 +1989,18 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     <span>{isAr ? 'اتصال' : 'Call'}</span>
                   </a>
                 )}
-                {peekWhatsappDigits && (
+                {peekWhatsappUrl && (
                   <a
-                    href={`https://wa.me/${peekWhatsappDigits}`}
+                    href={peekWhatsappUrl}
                     target="_blank"
                     rel="noreferrer"
+                    title={
+                      peekWhatsappDialect
+                        ? isAr
+                          ? `فتح واتساب برسالة جاهزة (${peekWhatsappDialect.flag} ${peekWhatsappDialect.dialectLabelAr})`
+                          : `Open WhatsApp with prepared message (${peekWhatsappDialect.flag} ${peekWhatsappDialect.dialectLabelEn})`
+                        : t.openWhatsApp
+                    }
                     className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 px-3 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
                   >
                     <MessageSquare className="h-3.5 w-3.5" />
