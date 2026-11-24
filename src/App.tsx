@@ -1080,6 +1080,7 @@ function LeadFlowAppInner() {
           sidebarCollapsed ? 'w-[72px]' : 'w-64'
         }`}
       >
+        <div className="h-1 w-full bg-gradient-to-r from-[#0077B6] via-[#0095D9] to-[#00B5CC] shrink-0" />
         <div
           className={`h-16 flex items-center border-b border-slate-200 dark:border-slate-800 shrink-0 ${
             sidebarCollapsed ? 'justify-center px-2' : 'justify-between px-3.5 gap-2'
@@ -1090,14 +1091,15 @@ function LeadFlowAppInner() {
               <img
                 src={BRAND_LOGO_URL}
                 alt={BRAND_NAME_AR}
-                className="h-10 w-10 rounded-xl object-cover shrink-0 select-none shadow-sm ring-1 ring-sky-500/20"
+                referrerPolicy="no-referrer"
+                className="h-10 w-10 rounded-xl object-cover shrink-0 select-none shadow-sm shadow-[#0077B6]/20 ring-1 ring-[#0095D9]/25"
               />
               <div className="min-w-0 leading-tight">
                 <div className="text-[12px] font-bold text-slate-900 dark:text-white truncate">
                   {isAr ? 'عيادات دكتور عبدالله رمضان' : 'Dr. Abdullah Ramadan'}
                 </div>
-                <div className="text-[10.5px] font-semibold text-[#0077B6] dark:text-cyan-400 truncate mt-0.5">
-                  {isAr ? 'للأسنان · نظام الإدارة' : 'Dental Clinics CRM'}
+                <div className="text-[10.5px] font-semibold text-[#0077B6] dark:text-[#38BDF8] truncate mt-0.5">
+                  {isAr ? 'للأسنان · Abdallah Ramadan' : 'Dental Specialist CRM'}
                 </div>
               </div>
             </div>
@@ -1118,7 +1120,8 @@ function LeadFlowAppInner() {
             <img
               src={BRAND_LOGO_URL}
               alt={BRAND_NAME_AR}
-              className="h-9 w-9 rounded-xl object-cover select-none shadow-sm ring-1 ring-sky-500/20"
+              referrerPolicy="no-referrer"
+              className="h-9 w-9 rounded-xl object-cover select-none shadow-sm shadow-[#0077B6]/20 ring-1 ring-[#0095D9]/25"
             />
           </div>
         )}
@@ -1185,10 +1188,10 @@ function LeadFlowAppInner() {
                   setActiveTab(item.id);
                   setSelectedLeadId(null);
                 }}
-                className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-xs font-medium transition-all whitespace-nowrap ${
                   active
-                    ? 'bg-[#0077B6] text-white dark:bg-[#0096C7] shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100'
+                    ? 'bg-gradient-to-r from-[#0077B6] to-[#0095D9] text-white shadow-sm shadow-[#0077B6]/20'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-sky-50/70 dark:hover:bg-slate-800 hover:text-[#0077B6] dark:hover:text-slate-100'
                 }`}
               >
                 <span className="flex items-center gap-3 min-w-0">
@@ -1210,12 +1213,14 @@ function LeadFlowAppInner() {
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 md:hidden flex">
           <div className="w-[84vw] max-w-xs bg-white dark:bg-slate-900 border-e border-slate-200 dark:border-slate-800 h-full flex flex-col pt-safe pb-safe crm-drawer-enter shadow-2xl">
+            <div className="h-1 w-full bg-gradient-to-r from-[#0077B6] via-[#0095D9] to-[#00B5CC] shrink-0" />
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
               <div className="min-w-0 flex items-center gap-2.5">
                 <img
                   src={BRAND_LOGO_URL}
                   alt={BRAND_NAME_AR}
-                  className="h-11 w-11 rounded-xl object-cover shrink-0 select-none shadow-sm ring-1 ring-sky-500/20"
+                  referrerPolicy="no-referrer"
+                  className="h-11 w-11 rounded-xl object-cover shrink-0 select-none shadow-sm shadow-[#0077B6]/20 ring-1 ring-[#0095D9]/25"
                 />
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">
@@ -1281,8 +1286,8 @@ function LeadFlowAppInner() {
                     }}
                     className={`w-full flex items-center justify-between gap-2 rounded-lg px-3.5 min-h-[44px] text-sm font-medium transition-colors ${
                       active
-                        ? 'bg-[#0077B6] text-white dark:bg-[#0096C7] shadow-xs'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        ? 'bg-gradient-to-r from-[#0077B6] to-[#0095D9] text-white shadow-sm shadow-[#0077B6]/20'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-sky-50/70 dark:hover:bg-slate-800'
                     }`}
                   >
                     <span className="flex items-center gap-3 min-w-0">
@@ -1323,7 +1328,7 @@ function LeadFlowAppInner() {
                   onClick={handleToggleSound}
                   className={`inline-flex items-center justify-center gap-1 rounded-lg border min-h-[42px] text-xs font-medium ${
                     soundEnabled
-                      ? 'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
+                      ? 'border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-[#0077B6] dark:text-cyan-300'
                       : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500'
                   }`}
                 >
@@ -1410,7 +1415,7 @@ function LeadFlowAppInner() {
                 onClick={() => setMobileSearchOpen((v) => !v)}
                 className={`lg:hidden min-h-[42px] min-w-[42px] flex items-center justify-center rounded-lg border transition-colors ${
                   mobileSearchOpen
-                    ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                    ? 'border-[#0095D9]/50 dark:border-cyan-700 bg-sky-50 dark:bg-sky-950/40 text-[#0077B6] dark:text-cyan-300'
                     : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
                 }`}
                 aria-label={isAr ? 'بحث سريع' : 'Quick search'}
@@ -1444,7 +1449,7 @@ function LeadFlowAppInner() {
               onClick={handleToggleSound}
               className={`hidden sm:flex rounded-lg border p-2 transition-colors ${
                 soundEnabled
-                  ? 'border-blue-200 dark:border-blue-800/80 bg-blue-50/70 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100/70 dark:hover:bg-blue-950/50'
+                  ? 'border-sky-200 dark:border-sky-800/80 bg-sky-50/70 dark:bg-sky-950/30 text-[#0077B6] dark:text-cyan-400 hover:bg-sky-100/70 dark:hover:bg-sky-950/50'
                   : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
               title={
@@ -1469,7 +1474,7 @@ function LeadFlowAppInner() {
                 className="relative min-h-[42px] min-w-[42px] sm:min-h-0 sm:min-w-0 flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 sm:p-2 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                 aria-label={t.notifications}
               >
-                {unreadCount > 0 ? <BellRing className="h-4 w-4 text-blue-600 dark:text-blue-400" /> : <Bell className="h-4 w-4" />}
+                {unreadCount > 0 ? <BellRing className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" /> : <Bell className="h-4 w-4" />}
                 {unreadCount > 0 && (
                   <span className="absolute -top-1 -end-1 h-4 min-w-4 px-1 rounded-full bg-red-600 text-[10px] font-bold text-white flex items-center justify-center tabular-nums">
                     {unreadCount > 99 ? '99+' : unreadCount}
@@ -1483,7 +1488,7 @@ function LeadFlowAppInner() {
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-slate-900 dark:text-slate-100">{t.notifications}</span>
                       {unreadCount > 0 && (
-                        <span className="font-mono text-[11px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
+                        <span className="font-mono text-[11px] font-semibold text-[#0077B6] dark:text-cyan-400 tabular-nums">
                           ({unreadCount})
                         </span>
                       )}
@@ -1494,7 +1499,7 @@ function LeadFlowAppInner() {
                         onClick={handleToggleSound}
                         className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
                           soundEnabled
-                            ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-950/70'
+                            ? 'bg-sky-50 dark:bg-sky-950/40 text-[#0077B6] dark:text-cyan-300 hover:bg-sky-100 dark:hover:bg-sky-950/70'
                             : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                         }`}
                       >
@@ -1504,7 +1509,7 @@ function LeadFlowAppInner() {
                       <button
                         type="button"
                         onClick={handleMarkNotificationsRead}
-                        className="text-blue-600 dark:text-blue-400 font-medium hover:underline px-1"
+                        className="text-[#0077B6] dark:text-cyan-400 font-medium hover:underline px-1"
                       >
                         {t.markAllRead}
                       </button>
@@ -1531,7 +1536,7 @@ function LeadFlowAppInner() {
                           type="button"
                           disabled={testingPush}
                           onClick={handleTestPushNotification}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 font-semibold text-slate-700 dark:text-slate-200 hover:border-blue-400 hover:text-blue-600 transition-colors disabled:opacity-50"
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 font-semibold text-slate-700 dark:text-slate-200 hover:border-[#0095D9] hover:text-[#0077B6] dark:hover:text-cyan-400 transition-colors disabled:opacity-50"
                         >
                           <Sparkles className="h-3 w-3" />
                           <span>{isAr ? 'اختبار إشعار' : 'Test Push'}</span>
@@ -1545,7 +1550,7 @@ function LeadFlowAppInner() {
                         <button
                           type="button"
                           onClick={handleEnablePushNotifications}
-                          className="inline-flex items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 font-semibold transition-colors whitespace-nowrap"
+                          className="inline-flex items-center gap-1 rounded-md bg-[#0077B6] hover:bg-[#006299] text-white px-2.5 py-1 font-semibold transition-colors whitespace-nowrap"
                         >
                           <BellRing className="h-3 w-3" />
                           <span>{isAr ? 'تفعيل الإشعارات' : 'Enable Push'}</span>
@@ -1594,13 +1599,13 @@ function LeadFlowAppInner() {
                               )
                             }
                             className={`w-full text-start p-3.5 text-xs flex items-start justify-between gap-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50 ${
-                              n.is_read ? 'opacity-70' : 'bg-blue-50/45 dark:bg-blue-950/25'
+                              n.is_read ? 'opacity-70' : 'bg-sky-50/55 dark:bg-sky-950/25'
                             }`}
                           >
                             <div className="flex items-start gap-2.5 min-w-0 flex-1">
                               <span
                                 className={`mt-1.5 h-2 w-2 rounded-[2px] shrink-0 ${
-                                  n.is_read ? 'bg-slate-300 dark:bg-slate-700' : 'bg-blue-600'
+                                  n.is_read ? 'bg-slate-300 dark:bg-slate-700' : 'bg-[#0088CC]'
                                 }`}
                                 aria-hidden="true"
                               />

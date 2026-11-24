@@ -5,6 +5,9 @@
   :root {
     --font-sans: "IBM Plex Sans Arabic", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
     --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+    --brand-primary: #0077b6;
+    --brand-mid: #0095d9;
+    --brand-cyan: #00b5cc;
   }
 
   html {
@@ -83,23 +86,23 @@
 }
 
 .crm-top-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: #0088cc;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 .dark .crm-top-scrollbar::-webkit-scrollbar-track {
-  background: rgba(30, 41, 59, 0.7);
+  background: rgba(15, 23, 42, 0.75);
 }
 
 .dark .crm-top-scrollbar::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: #334155;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 .dark .crm-top-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: #0095d9;
   border: 2px solid transparent;
   background-clip: content-box;
 }

@@ -112,7 +112,7 @@ export const FollowUpsView: React.FC<FollowUpsViewProps> = ({
                     ) : isOverdue ? (
                       <AlertCircle className="h-4 w-4 text-red-600 shrink-0" />
                     ) : (
-                      <Clock className="h-4 w-4 text-blue-600 shrink-0" />
+                      <Clock className="h-4 w-4 text-[#0077B6] dark:text-cyan-400 shrink-0" />
                     )}
                     <span className="font-semibold text-sm text-slate-900 dark:text-slate-100 truncate">{task.title}</span>
                     {isOverdue && (
@@ -125,7 +125,7 @@ export const FollowUpsView: React.FC<FollowUpsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onSelectLead(task.lead_id || task.lead_code || '')}
-                      className="inline-flex items-center gap-1 font-medium text-blue-600 hover:underline min-h-[32px]"
+                      className="inline-flex items-center gap-1 font-medium text-[#0077B6] dark:text-cyan-400 hover:underline min-h-[32px]"
                     >
                       <span>{task.lead_name} ({task.lead_code})</span>
                       <ArrowUpRight className="h-3 w-3" />

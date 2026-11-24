@@ -106,7 +106,7 @@ export const WorkspaceWizardModal: React.FC<WorkspaceWizardModalProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={isAr ? 'مثال: شركة النخبة للخدمات' : 'e.g. Vertex Services Group'}
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
             />
           </div>
 
@@ -120,7 +120,7 @@ export const WorkspaceWizardModal: React.FC<WorkspaceWizardModalProps> = ({
                 value={industry}
                 onChange={(e) => setIndustry(e.target.value)}
                 placeholder={isAr ? 'عقارات، عيادات، تجارة...' : 'Services, Retail, Health...'}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
               />
             </div>
 
@@ -131,7 +131,7 @@ export const WorkspaceWizardModal: React.FC<WorkspaceWizardModalProps> = ({
               <select
                 value={countryCode}
                 onChange={(e) => setCountryCode(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
               >
                 <option value="+966">+966 (Saudi Arabia)</option>
                 <option value="+971">+971 (UAE)</option>
@@ -156,7 +156,7 @@ export const WorkspaceWizardModal: React.FC<WorkspaceWizardModalProps> = ({
                 onChange={(e) => setPhone(e.target.value)}
                 dir="ltr"
                 placeholder="+966 50 000 0000"
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
               />
             </div>
             <div>
@@ -169,7 +169,7 @@ export const WorkspaceWizardModal: React.FC<WorkspaceWizardModalProps> = ({
                 onChange={(e) => setEmail(e.target.value)}
                 dir="ltr"
                 placeholder="contact@company.com"
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
               />
             </div>
           </div>

@@ -85,7 +85,7 @@ function formatSourceLabel(source: string, isAr: boolean): string {
 
 function getSourceColorClass(source: string): string {
   if (source === 'facebook_lead_ads' || source === 'meta_lead_ads') {
-    return 'text-blue-700 dark:text-blue-400';
+    return 'text-[#0077B6] dark:text-cyan-400';
   }
   if (source === 'instagram_lead_ads') {
     return 'text-rose-600 dark:text-rose-400';
@@ -603,7 +603,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder={t.searchLeads}
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-9 pe-3 py-2 min-h-[44px] sm:min-h-[38px] text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600 transition-shadow"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-9 pe-3 py-2 min-h-[44px] sm:min-h-[38px] text-base sm:text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0095D9] transition-shadow"
             />
           </div>
 
@@ -844,7 +844,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
         {/* Bulk Action Bar */}
         {canManage && selectedIds.length > 0 && (
           <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-3">
-            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
+            <span className="text-xs font-semibold text-[#0077B6] dark:text-cyan-400 tabular-nums">
               {selectedIds.length} {t.selectedCount}
             </span>
             <div className="flex items-center gap-2">
@@ -864,7 +864,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                 type="button"
                 disabled={!bulkStatusId}
                 onClick={handleBulkStatus}
-                className="rounded-lg bg-slate-900 dark:bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                className="rounded-lg bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 transition-colors"
               >
                 {t.confirm}
               </button>
@@ -888,7 +888,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
               <button
                 type="button"
                 onClick={handleBulkAssign}
-                className="rounded-lg bg-slate-900 dark:bg-blue-600 px-3 py-1.5 text-xs font-medium text-white"
+                className="rounded-lg bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] px-3 py-1.5 text-xs font-medium text-white transition-colors"
               >
                 {t.confirm}
               </button>
@@ -943,7 +943,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                   (typeof customVals.quantity_sizes === 'string' && customVals.quantity_sizes.trim()) ||
                   lead.notes_summary ||
                   '';
-                const stageColor = lead.status_color || '#2563EB';
+                const stageColor = lead.status_color || '#0088CC';
                 const inboxUrl =
                   typeof customVals.inbox_url === 'string' && customVals.inbox_url.startsWith('http')
                     ? customVals.inbox_url
@@ -1067,7 +1067,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                         {primaryPhone ? (
                           <a
                             href={`tel:${primaryPhone}`}
-                            className="inline-flex items-center gap-1 rounded-lg border border-blue-200 dark:border-blue-900/70 bg-blue-50/70 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 px-2 min-h-[34px] text-[11px] font-semibold"
+                            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 dark:border-sky-900/70 bg-sky-50/70 dark:bg-sky-950/30 text-[#0077B6] dark:text-cyan-300 px-2 min-h-[34px] text-[11px] font-semibold"
                           >
                             <Phone className="h-3 w-3 shrink-0" />
                             <span className="font-mono tabular-nums truncate max-w-[110px]" dir="ltr">
@@ -1093,7 +1093,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                             href={inboxUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center justify-center rounded-lg border border-indigo-200 dark:border-indigo-900/70 bg-indigo-50/70 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 min-h-[34px] min-w-[34px]"
+                            className="inline-flex items-center justify-center rounded-lg border border-cyan-200 dark:border-cyan-900/70 bg-cyan-50/70 dark:bg-cyan-950/30 text-cyan-700 dark:text-cyan-300 min-h-[34px] min-w-[34px]"
                             aria-label="Meta Inbox"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
@@ -1238,7 +1238,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     (typeof customVals.quantity_sizes === 'string' && customVals.quantity_sizes.trim()) ||
                     lead.notes_summary ||
                     '';
-                  const stageColor = lead.status_color || '#2563EB';
+                  const stageColor = lead.status_color || '#0088CC';
                   const inboxUrl =
                     typeof customVals.inbox_url === 'string' && customVals.inbox_url.startsWith('http')
                       ? customVals.inbox_url
@@ -1252,7 +1252,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                       onClick={() => onSelectLead(lead.id, lead)}
                       className={`group cursor-pointer border-s-4 transition-colors duration-150 ${
                         isPeeking
-                          ? 'border-s-blue-600 bg-blue-50/70 dark:bg-blue-950/30'
+                          ? 'border-s-[#0088CC] bg-sky-50/75 dark:bg-sky-950/30'
                           : isUnread
                             ? 'border-s-red-600 bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/35'
                             : 'border-s-emerald-600 bg-emerald-50/25 dark:bg-emerald-950/10 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/25'
@@ -1298,7 +1298,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                             </div>
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5">
-                                <span className="font-semibold text-slate-900 dark:text-slate-100 group-hover:text-blue-700 dark:group-hover:text-blue-400 transition-colors truncate max-w-[180px]">
+                                <span className="font-semibold text-slate-900 dark:text-slate-100 group-hover:text-[#0077B6] dark:group-hover:text-cyan-400 transition-colors truncate max-w-[180px]">
                                   {lead.full_name}
                                 </span>
                                 <span
@@ -1340,7 +1340,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={(e) => handleCopy(`phone-${lead.id}`, primaryPhone, e)}
-                                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 rounded hover:bg-slate-200/70 dark:hover:bg-slate-700 text-slate-400 hover:text-blue-600 transition-all"
+                                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 rounded hover:bg-slate-200/70 dark:hover:bg-slate-700 text-slate-400 hover:text-[#0077B6] transition-all"
                                   title={isAr ? 'نسخ الرقم' : 'Copy phone'}
                                 >
                                   {copiedId === `phone-${lead.id}` ? (
@@ -1380,7 +1380,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                             value={lead.status_id || ''}
                             disabled={updatingLeadId === lead.id}
                             onChange={(e) => handleQuickStatusUpdate(lead.id, e.target.value)}
-                            className="rounded-md border px-2 py-1 text-[11px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-colors disabled:opacity-50"
+                            className="rounded-md border px-2 py-1 text-[11px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0095D9]/40 transition-colors disabled:opacity-50"
                             style={{
                               color: stageColor,
                               backgroundColor: `${stageColor}14`,
@@ -1448,7 +1448,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                           <button
                             type="button"
                             onClick={(e) => handleOpenPeek(lead, e)}
-                            className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-700 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                            className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-600 dark:text-slate-300 hover:border-[#0095D9] dark:hover:border-cyan-700 hover:text-[#0077B6] dark:hover:text-cyan-400 transition-colors"
                             title={isAr ? 'معاينة سريعة' : 'Quick Peek'}
                           >
                             <Eye className="h-3.5 w-3.5" />
@@ -1468,7 +1468,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                           {primaryPhone && (
                             <a
                               href={`tel:${primaryPhone}`}
-                              className="p-1.5 rounded-md text-slate-500 hover:bg-blue-50 dark:hover:bg-blue-950/40 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                              className="p-1.5 rounded-md text-slate-500 hover:bg-sky-50 dark:hover:bg-sky-950/40 hover:text-[#0077B6] dark:hover:text-cyan-400 transition-colors"
                               title={t.callCustomer}
                             >
                               <Phone className="h-3.5 w-3.5" />
@@ -1490,7 +1490,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                               href={inboxUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="p-1.5 rounded-md text-slate-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                              className="p-1.5 rounded-md text-slate-500 hover:bg-cyan-50 dark:hover:bg-cyan-950/40 hover:text-cyan-700 dark:hover:text-cyan-400 transition-colors"
                               title={isAr ? 'فتح محادثة Meta Inbox' : 'Open Meta Inbox'}
                             >
                               <ExternalLink className="h-3.5 w-3.5" />
@@ -1562,7 +1562,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                   <div className="flex items-start gap-3.5 min-w-0">
                     <div
                       className="h-11 w-11 rounded-xl flex items-center justify-center text-sm font-bold text-white shrink-0 shadow-xs"
-                      style={{ backgroundColor: peekLead.status_color || '#2563EB' }}
+                      style={{ backgroundColor: peekLead.status_color || '#0088CC' }}
                     >
                       {getInitials(peekLead.full_name)}
                     </div>
@@ -1702,7 +1702,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleCopy('drawer-phone', peekPhone)}
-                      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 text-slate-500 hover:text-blue-600 transition-colors shrink-0"
+                      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 text-slate-500 hover:text-[#0077B6] transition-colors shrink-0"
                     >
                       {copiedId === 'drawer-phone' ? (
                         <Check className="h-3.5 w-3.5 text-emerald-600" />
@@ -1724,7 +1724,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleCopy('drawer-email', peekLead.email!)}
-                      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 text-slate-500 hover:text-blue-600 transition-colors shrink-0"
+                      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 text-slate-500 hover:text-[#0077B6] transition-colors shrink-0"
                     >
                       {copiedId === 'drawer-email' ? (
                         <Check className="h-3.5 w-3.5 text-emerald-600" />
@@ -1740,7 +1740,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 overflow-hidden">
                 <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/80 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <Package className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                    <Package className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
                     <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
                       {isAr ? 'الخدمة الطبية والتفاصيل' : 'Requested Dental Service & Notes'}
                     </span>
@@ -1829,7 +1829,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                 {peekPhone && (
                   <a
                     href={`tel:${peekPhone}`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-3 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 dark:border-sky-900 bg-sky-50 dark:bg-sky-950/40 text-[#0077B6] dark:text-cyan-300 px-3 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-sky-100 dark:hover:bg-sky-900/50 transition-colors"
                   >
                     <Phone className="h-3.5 w-3.5" />
                     <span>{isAr ? 'اتصال' : 'Call'}</span>
@@ -1860,7 +1860,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     href={peekInboxUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 min-h-[42px] min-w-[42px] sm:min-h-0 sm:min-w-0 sm:px-2.5 sm:py-2 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
+                    className="inline-flex items-center justify-center rounded-lg border border-cyan-200 dark:border-cyan-900 bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 min-h-[42px] min-w-[42px] sm:min-h-0 sm:min-w-0 sm:px-2.5 sm:py-2 text-xs font-semibold hover:bg-cyan-100 dark:hover:bg-cyan-900/50 transition-colors"
                     title="Meta Inbox"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />

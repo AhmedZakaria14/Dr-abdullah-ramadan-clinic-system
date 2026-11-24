@@ -108,7 +108,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const primaryKpis = [
     { label: t.totalLeads, value: s.total, sub: syncedSub, icon: Users, tone: 'text-[#0077B6] dark:text-cyan-400', isTotal: true },
-    { label: t.newLeads, value: s.new, sub: `${t.receivedMonth}: ${s.thisMonth}${unreadSuffix}`, icon: UserPlus, tone: typeof s.unreadLeads === 'number' && s.unreadLeads > 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400' },
+    { label: t.newLeads, value: s.new, sub: `${t.receivedMonth}: ${s.thisMonth}${unreadSuffix}`, icon: UserPlus, tone: typeof s.unreadLeads === 'number' && s.unreadLeads > 0 ? 'text-red-600 dark:text-red-400' : 'text-[#0088CC] dark:text-cyan-400' },
     { label: t.qualifiedLeads, value: s.qualified, sub: `${t.contactedLeads}: ${s.contacted}`, icon: TrendingUp, tone: 'text-teal-600 dark:text-teal-400' },
     { label: t.convertedLeads, value: s.converted, sub: `${t.conversionRate}: ${s.conversionRate}%`, icon: CheckCircle2, tone: 'text-emerald-600 dark:text-emerald-400' },
   ];
@@ -340,7 +340,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10, fill: '#64748B' }} />
                 <YAxis type="category" dataKey="name" width={88} tick={{ fontSize: 10, fill: '#64748B' }} />
                 <Tooltip />
-                <Bar dataKey="total" fill="#2563EB" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="total" fill="#0088CC" radius={[0, 4, 4, 0]} />
                 <Bar dataKey="converted" fill="#059669" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>

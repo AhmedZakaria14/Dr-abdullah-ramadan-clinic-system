@@ -5,6 +5,9 @@ export const ALSAFA_WORKSPACE_ID = CLINIC_WORKSPACE_ID;
 
 export const BRAND_LOGO_URL =
   '/assets/aistudio/272032127_685928466148297_4172930338981379191_n__6__eb01fdd9.jpg';
+export const BRAND_ICON_URL = '/favicon.png?v=3';
+export const BRAND_PRIMARY = '#0077B6';
+export const BRAND_ACCENT = '#00B5CC';
 export const BRAND_NAME_AR = 'عيادات دكتور عبدالله رمضان للأسنان';
 export const BRAND_NAME_EN = 'Dr. Abdullah Ramadan Dental Clinics';
 export const BRAND_SUBTITLE_EN = 'Abdallah Ramadan · Dental Specialist';

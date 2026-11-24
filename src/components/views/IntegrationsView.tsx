@@ -381,7 +381,7 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
                     dir="ltr"
                     value={metaVerifyToken}
                     onChange={(e) => setMetaVerifyToken(e.target.value)}
-                    placeholder="leadflow_verify_..."
+                    placeholder="dr_abdullah_ramadan_verify_..."
                     className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 min-h-[44px] sm:min-h-0 text-base sm:text-xs"
                   />
                 </div>
@@ -431,7 +431,7 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
                       <button
                         type="button"
                         onClick={() => handleSyncMetaForm(f.id, f.name, p.id)}
-                        className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white shrink-0"
+                        className="rounded bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] px-2.5 py-1 text-[11px] font-medium text-white shrink-0 transition-colors"
                       >
                         {isAr ? 'مزامنة النموذج' : 'Pull Leads'}
                       </button>

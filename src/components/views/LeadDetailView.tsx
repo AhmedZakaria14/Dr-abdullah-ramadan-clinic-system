@@ -409,7 +409,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                     {lead.lead_code}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span className="font-medium text-blue-700 dark:text-blue-400">
+                  <span className="font-medium text-[#0077B6] dark:text-cyan-400">
                     {formatSourceDisplay(lead.source, isAr)}
                   </span>
                   <span aria-hidden="true">·</span>
@@ -470,7 +470,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
               {primaryPhone && (
                 <a
                   href={`tel:${primaryPhone}`}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-900/70 bg-blue-50/70 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 px-3.5 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all duration-150 whitespace-nowrap"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-sky-200 dark:border-sky-900/70 bg-sky-50/70 dark:bg-sky-950/30 text-[#0077B6] dark:text-cyan-300 px-3.5 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-sky-100 dark:hover:bg-sky-900/40 transition-all duration-150 whitespace-nowrap"
                 >
                   <Phone className="h-3.5 w-3.5" />
                   <span>{t.callCustomer}</span>
@@ -492,7 +492,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   href={inboxUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-indigo-200 dark:border-indigo-900/70 bg-indigo-50/70 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 px-3.5 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-all duration-150 whitespace-nowrap"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-200 dark:border-cyan-900/70 bg-cyan-50/70 dark:bg-cyan-950/30 text-cyan-700 dark:text-cyan-300 px-3.5 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold hover:bg-cyan-100 dark:hover:bg-cyan-900/40 transition-all duration-150 whitespace-nowrap"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
                   <span>{isAr ? 'محادثة Meta Inbox' : 'Meta Inbox'}</span>
@@ -570,7 +570,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                           ? 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 hover:border-slate-400'
                           : 'bg-transparent border-transparent text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-900 hover:border-slate-200 dark:hover:border-slate-800'
                     } ${isUpdating ? 'opacity-60' : ''}`}
-                    style={isActive ? { backgroundColor: stage.color || '#2563EB' } : undefined}
+                    style={isActive ? { backgroundColor: stage.color || '#0088CC' } : undefined}
                   >
                     <span className="tabular-nums opacity-75 me-1">{idx + 1}.</span>
                     <span>{isAr ? stage.name_ar : stage.name_en}</span>
@@ -590,7 +590,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-50/60 dark:bg-slate-950/40">
               <div className="flex items-center gap-2">
-                <Package className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <Package className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                   {isAr ? 'تفاصيل الحالة والخدمة الطبية المطلوبة' : 'Requested Dental Service & Case Details'}
                 </h3>
@@ -762,7 +762,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                         </div>
                         <div className="text-slate-900 dark:text-slate-100 font-medium sm:text-end max-w-md break-words whitespace-pre-wrap">
                           {isUrl ? (
-                            <a href={strVal} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 underline">
+                            <a href={strVal} target="_blank" rel="noreferrer" className="text-[#0077B6] dark:text-cyan-400 underline">
                               {strVal}
                             </a>
                           ) : (
@@ -786,7 +786,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                 value={newNote}
                 onChange={(e) => setNewNote(e.target.value)}
                 placeholder={isAr ? 'اكتب ملاحظة داخلية حول مكالمة أو عرض سعر...' : 'Add internal note about call or quote...'}
-                className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 min-h-[44px] sm:min-h-0 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 min-h-[44px] sm:min-h-0 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
               />
               <button
                 type="submit"
@@ -924,7 +924,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCopy('phone', primaryPhone)}
-                    className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-blue-600 transition-colors shrink-0"
+                    className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-[#0077B6] transition-colors shrink-0"
                     title={isAr ? 'نسخ الرقم' : 'Copy phone'}
                   >
                     {copiedKey === 'phone' ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
@@ -944,7 +944,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCopy('email', lead.email!)}
-                    className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-blue-600 transition-colors shrink-0"
+                    className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-[#0077B6] transition-colors shrink-0"
                     title={isAr ? 'نسخ البريد' : 'Copy email'}
                   >
                     {copiedKey === 'email' ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
@@ -994,7 +994,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
           {/* Campaign Attribution */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2 bg-slate-50/60 dark:bg-slate-950/40">
-              <Megaphone className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+              <Megaphone className="h-4 w-4 text-[#0088CC] dark:text-cyan-400" />
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{t.campaignAttribution}</h3>
             </div>
             <div className="p-5 divide-y divide-slate-100 dark:divide-slate-800 text-xs">
@@ -1053,7 +1053,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                           href={meta.docUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-blue-600 underline mt-1"
+                          className="inline-flex items-center gap-1 text-[#0077B6] dark:text-cyan-400 underline mt-1"
                         >
                           <span>{isAr ? 'فتح مستند جوجل' : 'Open Google Doc'}</span>
                           <ExternalLink className="h-3 w-3" />

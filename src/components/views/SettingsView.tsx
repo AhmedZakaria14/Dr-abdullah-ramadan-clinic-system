@@ -118,7 +118,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `leadflow-backup-${business.id.slice(0, 8)}.json`;
+      a.download = `dr-abdullah-ramadan-backup-${business.id.slice(0, 8)}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err: any) {
@@ -132,7 +132,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         {/* Business Profile */}
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-6">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100 mb-4">
-            <Building2 className="h-4 w-4 text-blue-600" />
+            <Building2 className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
             <span>{isAr ? 'ملف النشاط التجاري والهوية' : 'Business Profile & Branding'}</span>
           </div>
           <form onSubmit={handleSaveBusiness} className="space-y-4 text-xs">
@@ -315,7 +315,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {isAdmin && (
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
-            <Shield className="h-4 w-4 text-blue-600" />
+            <Shield className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               {isAr ? 'سجل التدقيق الأمني (Audit Logs)' : 'Security Audit Logs'}
             </h3>

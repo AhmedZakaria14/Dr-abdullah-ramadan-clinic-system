@@ -40,7 +40,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
               className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
                 variant === 'danger'
                   ? 'bg-red-50 text-red-600 dark:bg-red-950/50 dark:text-red-400'
-                  : 'bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-400'
+                  : 'bg-sky-50 text-[#0077B6] dark:bg-sky-950/50 dark:text-cyan-400'
               }`}
             >
               <AlertTriangle className="h-5 w-5" />

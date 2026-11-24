@@ -105,7 +105,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <img
                 src={BRAND_LOGO_URL}
                 alt={BRAND_NAME_AR}
-                className="h-24 w-24 sm:h-28 sm:w-28 rounded-2xl object-cover select-none shadow-lg shadow-sky-600/20 ring-2 ring-white dark:ring-sky-500/30"
+                referrerPolicy="no-referrer"
+                className="h-24 w-24 sm:h-28 sm:w-28 rounded-2xl object-cover select-none shadow-lg shadow-[#0077B6]/25 ring-2 ring-white dark:ring-[#0095D9]/35"
               />
               <h1 className="mt-4 text-lg sm:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
                 {isAr ? BRAND_NAME_AR : BRAND_NAME_EN}

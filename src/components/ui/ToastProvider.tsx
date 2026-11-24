@@ -67,7 +67,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             <div className="flex items-center gap-2 min-w-0 flex-1">
               {t.variant === 'success' && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />}
               {t.variant === 'error' && <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />}
-              {t.variant === 'info' && <Info className="h-4 w-4 shrink-0 text-blue-600" />}
+              {t.variant === 'info' && <Info className="h-4 w-4 shrink-0 text-[#0077B6] dark:text-cyan-400" />}
               <span className="line-clamp-2 font-medium leading-snug">{t.message}</span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
@@ -78,7 +78,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     t.onAction?.();
                     dismiss(t.id);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap min-h-[28px]"
+                  className="inline-flex items-center gap-1 rounded-lg bg-[#0077B6] hover:bg-[#006299] text-white px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap min-h-[28px]"
                 >
                   <span>{t.actionLabel}</span>
                   <ArrowUpRight className="h-3 w-3" />

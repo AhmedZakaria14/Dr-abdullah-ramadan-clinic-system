@@ -33,7 +33,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
 
   const [newNameAr, setNewNameAr] = useState('');
   const [newNameEn, setNewNameEn] = useState('');
-  const [newColor, setNewColor] = useState('#2563EB');
+  const [newColor, setNewColor] = useState('#0088CC');
 
   const fetchBoardLeads = async () => {
     try {

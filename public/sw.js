@@ -8,8 +8,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-const BRAND_ICON_URL =
-  '/assets/aistudio/272032127_685928466148297_4172930338981379191_n__6__eb01fdd9.jpg';
+const BRAND_ICON_URL = '/favicon.png?v=3';
 
 self.addEventListener('push', (event) => {
   let payload = {};

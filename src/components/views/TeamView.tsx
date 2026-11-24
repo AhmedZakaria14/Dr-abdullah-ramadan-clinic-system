@@ -221,10 +221,10 @@ export const TeamView: React.FC<TeamViewProps> = ({
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-100">
-              <ShieldCheck className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              <ShieldCheck className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
               <span>{isAr ? 'حسابا النظام المعتمدان' : 'Two Full-Access System Accounts'}</span>
             </div>
-            <span className="rounded-md bg-blue-50 dark:bg-blue-950/40 px-2 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 tabular-nums">
+            <span className="rounded-md bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-[#0077B6] dark:text-cyan-300 tabular-nums">
               {members.length}
             </span>
           </div>
@@ -294,7 +294,7 @@ export const TeamView: React.FC<TeamViewProps> = ({
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-100">
-            <KeyRound className="h-4 w-4 text-blue-600" />
+            <KeyRound className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
             <span>
               {isAr
                 ? `تغيير كلمة المرور للحساب الحالي (${currentUser.username || currentUser.email})`
@@ -338,7 +338,7 @@ export const TeamView: React.FC<TeamViewProps> = ({
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-100">
-              <UserPlus className="h-4 w-4 text-blue-600" />
+              <UserPlus className="h-4 w-4 text-[#0077B6] dark:text-cyan-400" />
               <span>
                 {isAr
                   ? 'إضافة أو تحديث حساب مستخدم (باسم مستخدم وكلمة مرور)'

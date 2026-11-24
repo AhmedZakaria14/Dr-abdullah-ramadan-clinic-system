@@ -25,7 +25,7 @@ export const CampaignsView: React.FC<CampaignsViewProps> = ({ lang, analytics })
     <div className="space-y-6">
       {/* Honest Meta Ads Insights Notice */}
       <div className="flex items-start gap-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-xs text-slate-600 dark:text-slate-300">
-        <Info className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+        <Info className="h-4 w-4 text-[#0077B6] dark:text-cyan-400 shrink-0 mt-0.5" />
         <div>
           <span className="font-semibold text-slate-900 dark:text-slate-100">
             {isAr ? 'حالة بيانات الإنفاق الإعلاني (Meta Ads Insights): ' : 'Ad Spend Data Status: '}

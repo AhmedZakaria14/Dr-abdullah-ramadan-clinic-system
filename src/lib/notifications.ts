@@ -1,4 +1,4 @@
-import { BRAND_LOGO_URL } from './constants';
+import { BRAND_ICON_URL } from './constants';
 
 export type BrowserNotificationSupport = 'granted' | 'denied' | 'default' | 'unsupported';
 
@@ -75,8 +75,8 @@ export async function showBrowserPushNotification(params: {
     if (reg && 'showNotification' in reg) {
       await reg.showNotification(params.title, {
         body: params.body,
-        icon: BRAND_LOGO_URL,
-        badge: BRAND_LOGO_URL,
+        icon: BRAND_ICON_URL,
+        badge: BRAND_ICON_URL,
         tag: params.id,
         silent: false,
         data,
@@ -90,7 +90,7 @@ export async function showBrowserPushNotification(params: {
   try {
     const notif = new window.Notification(params.title, {
       body: params.body,
-      icon: BRAND_LOGO_URL,
+      icon: BRAND_ICON_URL,
       tag: params.id,
       silent: false,
       data,
