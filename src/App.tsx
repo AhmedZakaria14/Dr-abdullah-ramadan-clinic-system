@@ -38,6 +38,9 @@ import {
   CustomField,
   Language,
   Lead,
+  MonitoredAccountFeedResponse,
+  MonitoredAccountPresence,
+  MonitoredActivityItem,
   NotificationItem,
   PipelineStage,
   Role,
@@ -75,6 +78,11 @@ import {
 import { ToastProvider, useToast } from './components/ui/ToastProvider';
 import { LoginScreen } from './components/ui/LoginScreen';
 import { GlobalLeadSearch } from './components/ui/GlobalLeadSearch';
+import {
+  AdminAccountSwitcher,
+  AdminLiveActivityDrawer,
+  AdminSupervisionBanner,
+} from './components/ui/AdminSupervisionBar';
 
 const WorkspaceWizardModal = lazy(() =>
   import('./components/modals/WorkspaceWizardModal').then((m) => ({ default: m.WorkspaceWizardModal }))
@@ -169,6 +177,14 @@ function LeadFlowAppInner() {
   const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
   const [showCreateLeadModal, setShowCreateLeadModal] = useState(false);
   const [refreshCounter, setRefreshCounter] = useState(0);
+
+  // Admin-only Live Account Supervision & Interface Switching State
+  const [monitoredAccounts, setMonitoredAccounts] = useState<MonitoredAccountPresence[]>([]);
+  const [monitoredUserId, setMonitoredUserId] = useState<string | null>(null);
+  const [followLive, setFollowLive] = useState<boolean>(true);
+  const [showMonitorDrawer, setShowMonitorDrawer] = useState<boolean>(false);
+  const [monitoredFeed, setMonitoredFeed] = useState<MonitoredAccountFeedResponse | null>(null);
+  const [loadingMonitorFeed, setLoadingMonitorFeed] = useState<boolean>(false);
   const [sheetStatus, setSheetStatus] = useState<{
     status?: string;
     attachedSheetName?: string;
@@ -371,6 +387,10 @@ function LeadFlowAppInner() {
       setActiveTab('dashboard');
       setSelectedLeadId(null);
       setSelectedLeadPreview(null);
+      setMonitoredUserId(null);
+      setMonitoredAccounts([]);
+      setShowMonitorDrawer(false);
+      setMonitoredFeed(null);
     });
     loadSessionAndWorkspaces();
   }, []);
@@ -379,15 +399,126 @@ function LeadFlowAppInner() {
     new Map([...prodBusinesses, ...demoBusinesses].map((b) => [b.id, b])).values()
   );
   const activeBusiness = allBusinesses.find((b) => b.id === activeBusinessId) || null;
-  const effectiveRole: Role = activeBusiness?.member_role || 'business_admin';
-  const isAdmin = effectiveRole === 'business_admin' || effectiveRole === 'super_admin';
-  const isModerator = effectiveRole === 'moderator' || activeBusiness?.account_slot === 'moderator';
+  const actualRole: Role = activeBusiness?.member_role || 'business_admin';
+  const isTrueAdmin =
+    Boolean(authUser) &&
+    (Boolean(authUser?.isOwner) ||
+      actualRole === 'business_admin' ||
+      actualRole === 'super_admin');
+  const monitoredAccount =
+    isTrueAdmin && monitoredUserId
+      ? monitoredAccounts.find((a) => a.userId === monitoredUserId) || null
+      : null;
+  const effectiveRole: Role = monitoredAccount ? monitoredAccount.role : actualRole;
+  const isAdmin = isTrueAdmin && !monitoredAccount;
+  const isModerator =
+    effectiveRole === 'moderator' ||
+    (monitoredAccount
+      ? monitoredAccount.accountSlot === 'moderator'
+      : activeBusiness?.account_slot === 'moderator');
+
+  const isTrueAdminRef = useRef<boolean>(isTrueAdmin);
+  isTrueAdminRef.current = isTrueAdmin;
+
+  const monitoredUserIdRef = useRef<string | null>(monitoredUserId);
+  monitoredUserIdRef.current = monitoredUserId;
+
+  const followLiveRef = useRef<boolean>(followLive);
+  followLiveRef.current = followLive;
 
   useEffect(() => {
     if (!isAdmin && (activeTab === 'team' || activeTab === 'integrations' || activeTab === 'settings')) {
       setActiveTab('leads');
     }
   }, [isAdmin, activeTab]);
+
+  const loadMonitoredAccounts = async (bizId: string) => {
+    if (!bizId || !isTrueAdminRef.current) return;
+    try {
+      const res = await apiRequest<{ accounts?: MonitoredAccountPresence[] }>(
+        `/businesses/${bizId}/monitor/accounts`
+      );
+      if (Array.isArray(res?.accounts)) {
+        setMonitoredAccounts(res.accounts);
+      }
+    } catch {
+      // Strictly admin-only endpoint; silently ignore if non-admin
+    }
+  };
+
+  const loadMonitoredFeed = async (bizId: string, userId: string) => {
+    if (!bizId || !userId || !isTrueAdminRef.current) return;
+    setLoadingMonitorFeed(true);
+    try {
+      const res = await apiRequest<MonitoredAccountFeedResponse>(
+        `/businesses/${bizId}/monitor/accounts/${encodeURIComponent(userId)}/feed`
+      );
+      if (res?.account) {
+        setMonitoredFeed(res);
+        setMonitoredAccounts((prev) =>
+          prev.some((a) => a.userId === res.account.userId)
+            ? prev.map((a) => (a.userId === res.account.userId ? res.account : a))
+            : [...prev, res.account]
+        );
+      }
+    } catch (err: any) {
+      notify(err.message || (isAr ? 'تعذر تحميل السجل اللحظي للحساب' : 'Failed to load live feed'), 'error');
+    } finally {
+      setLoadingMonitorFeed(false);
+    }
+  };
+
+  const mirrorAccountScreen = (acc: MonitoredAccountPresence) => {
+    const allowedMirrorTabs: NavTab[] = ['dashboard', 'leads', 'pipeline', 'followups', 'campaigns'];
+    const safeTab: NavTab = allowedMirrorTabs.includes(acc.activeTab as NavTab)
+      ? (acc.activeTab as NavTab)
+      : 'leads';
+    if (acc.activeLeadId) {
+      setActiveTab('leads');
+      setSelectedLeadPreview(null);
+      setSelectedLeadId(acc.activeLeadId);
+      syncLeadUrl(acc.activeLeadId);
+    } else {
+      setSelectedLeadId(null);
+      setSelectedLeadPreview(null);
+      syncLeadUrl(null);
+      setActiveTab(safeTab);
+    }
+  };
+
+  const mirrorAccountScreenRef = useRef(mirrorAccountScreen);
+  mirrorAccountScreenRef.current = mirrorAccountScreen;
+
+  const handleStartMonitoring = (account: MonitoredAccountPresence) => {
+    if (!isTrueAdmin || !activeBusinessId) return;
+    setMonitoredAccounts((prev) =>
+      prev.some((a) => a.userId === account.userId) ? prev : [...prev, account]
+    );
+    setMonitoredUserId(account.userId);
+    setFollowLive(true);
+    mirrorAccountScreen(account);
+    void loadMonitoredFeed(activeBusinessId, account.userId);
+    notify(
+      isAr
+        ? `تم التبديل إلى واجهة (${account.fullName}) — وضع الرقابة اللحظية مفعل`
+        : `Switched into ${account.fullName}'s interface — live supervision active`,
+      'info'
+    );
+  };
+
+  const handleStopMonitoring = () => {
+    setMonitoredUserId(null);
+    setShowMonitorDrawer(false);
+    setMonitoredFeed(null);
+    setSelectedLeadId(null);
+    setSelectedLeadPreview(null);
+    syncLeadUrl(null);
+    setActiveTab('dashboard');
+    notify(
+      isAr ? 'تمت العودة إلى واجهة الأدمن الكاملة' : 'Returned to full Admin interface',
+      'success'
+    );
+  };
 
   const loadWorkspaceData = async (bizId: string) => {
     if (!bizId) return;
@@ -412,6 +543,9 @@ function LeadFlowAppInner() {
       setNotifications(loadedNotifs);
       setUnreadCount(typeof notifRes?.unreadCount === 'number' ? notifRes.unreadCount : 0);
       if (sheetRes) setSheetStatus(sheetRes);
+      if (isTrueAdminRef.current) {
+        void loadMonitoredAccounts(bizId);
+      }
     } catch (err: any) {
       notify(err.message, 'error');
     } finally {
@@ -552,6 +686,10 @@ function LeadFlowAppInner() {
     prevBusinessIdRef.current = activeBusinessId;
 
     if (prevBiz && prevBiz !== activeBusinessId) {
+      setMonitoredUserId(null);
+      setMonitoredAccounts([]);
+      setShowMonitorDrawer(false);
+      setMonitoredFeed(null);
       const pending = pendingDeepLinkRef.current;
       if (pending && (!pending.businessId || pending.businessId === activeBusinessId) && pending.leadId) {
         setSelectedLeadId(pending.leadId);
@@ -575,6 +713,48 @@ function LeadFlowAppInner() {
       loadWorkspaceData(activeBusinessId);
     }
   }, [refreshCounter]);
+
+  // Real-Time Presence Heartbeat for lower-privilege accounts (Moderators/Staff)
+  // Enables Owner/Admin to observe their live screen & lead navigation in real time.
+  useEffect(() => {
+    if (!activeBusinessId || !authUser || isTrueAdmin) return;
+    let cancelled = false;
+
+    const reportPresence = () => {
+      if (cancelled) return;
+      void apiRequest(`/businesses/${activeBusinessId}/presence`, {
+        method: 'POST',
+        body: JSON.stringify({
+          activeTab,
+          activeLeadId: selectedLeadId || null,
+          activeLeadName: selectedLeadPreview?.full_name || null,
+          activeLeadCode: selectedLeadPreview?.lead_code || null,
+        }),
+      }).catch(() => {
+        // non-blocking presence telemetry
+      });
+    };
+
+    reportPresence();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        reportPresence();
+      }
+    }, 25_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    activeBusinessId,
+    authUser?.id,
+    isTrueAdmin,
+    activeTab,
+    selectedLeadId,
+    selectedLeadPreview?.full_name,
+    selectedLeadPreview?.lead_code,
+  ]);
 
   const emitIncomingNotificationsBatch = (incomingList: NotificationItem[]) => {
     if (!Array.isArray(incomingList) || incomingList.length === 0) return;
@@ -731,6 +911,70 @@ function LeadFlowAppInner() {
         });
         es.addEventListener('lead_updated', () => {
           requestWorkspaceRefresh();
+        });
+        es.addEventListener('presence_updated', (evt) => {
+          if (!isTrueAdminRef.current) return;
+          try {
+            const payload = JSON.parse((evt as MessageEvent).data || '{}');
+            const presence: MonitoredAccountPresence | undefined = payload.presence;
+            if (!presence || !presence.userId) return;
+            setMonitoredAccounts((prev) => {
+              if (prev.some((a) => a.userId === presence.userId)) {
+                return prev.map((a) => (a.userId === presence.userId ? { ...a, ...presence } : a));
+              }
+              void loadMonitoredAccounts(activeBusinessId);
+              return prev;
+            });
+            if (monitoredUserIdRef.current === presence.userId && followLiveRef.current) {
+              mirrorAccountScreenRef.current(presence);
+            }
+          } catch {
+            // ignore malformed presence payload
+          }
+        });
+        es.addEventListener('member_activity', (evt) => {
+          if (!isTrueAdminRef.current) return;
+          try {
+            const payload = JSON.parse((evt as MessageEvent).data || '{}');
+            const activity: (MonitoredActivityItem & { actorUserId?: string }) | undefined = payload.activity;
+            if (!activity || !activity.actorUserId) return;
+            const actorId = activity.actorUserId;
+            setMonitoredAccounts((prev) =>
+              prev.map((a) =>
+                a.userId === actorId
+                  ? {
+                      ...a,
+                      online: true,
+                      lastActionType: activity.activityType,
+                      lastActionAr: activity.descriptionAr,
+                      lastActionEn: activity.descriptionEn,
+                      lastSeenAt: activity.createdAt,
+                      todayActionsCount: (a.todayActionsCount || 0) + 1,
+                    }
+                  : a
+              )
+            );
+            if (monitoredUserIdRef.current === actorId) {
+              setMonitoredFeed((prev) => {
+                if (!prev) return prev;
+                if (prev.activities.some((item) => item.id === activity.id)) return prev;
+                const nextStats = { ...prev.statsToday };
+                nextStats.totalActions = (nextStats.totalActions || 0) + 1;
+                if (activity.activityType === 'whatsapp_opened') nextStats.whatsappContacts += 1;
+                else if (activity.activityType === 'status_changed') nextStats.statusChanges += 1;
+                else if (activity.activityType === 'note_added') nextStats.notesAdded += 1;
+                else if (activity.activityType === 'lead_opened') nextStats.leadsOpened += 1;
+                return {
+                  ...prev,
+                  statsToday: nextStats,
+                  activities: [activity, ...prev.activities].slice(0, 60),
+                };
+              });
+              requestWorkspaceRefresh();
+            }
+          } catch {
+            // ignore malformed activity payload
+          }
         });
         es.onerror = () => {
           setSseConnected(false);
@@ -959,6 +1203,10 @@ function LeadFlowAppInner() {
       primaryBiz?.member_role === 'moderator' || primaryBiz?.account_slot === 'moderator';
     setSelectedLeadId(null);
     setSelectedLeadPreview(null);
+    setMonitoredUserId(null);
+    setMonitoredAccounts([]);
+    setShowMonitorDrawer(false);
+    setMonitoredFeed(null);
     setActiveTab(loggingInAsModerator ? 'leads' : 'dashboard');
     setAuthUser(data.user);
     setCurrentUserId(data.user.id);
@@ -979,6 +1227,10 @@ function LeadFlowAppInner() {
     setActiveTab('dashboard');
     setSelectedLeadId(null);
     setSelectedLeadPreview(null);
+    setMonitoredUserId(null);
+    setMonitoredAccounts([]);
+    setShowMonitorDrawer(false);
+    setMonitoredFeed(null);
     setNotifications([]);
     setUnreadCount(0);
     setAnalytics(null);
@@ -1415,6 +1667,24 @@ function LeadFlowAppInner() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Strictly Admin-Only Sticky Live Supervision Banner when mirroring a Moderator/lower-privilege account */}
+        {isTrueAdmin && activeBusiness && monitoredAccount && (
+          <AdminSupervisionBanner
+            lang={lang}
+            account={monitoredAccount}
+            allAccounts={monitoredAccounts}
+            followLive={followLive}
+            onToggleFollowLive={() => setFollowLive((v) => !v)}
+            onJumpToActiveScreen={() => mirrorAccountScreen(monitoredAccount)}
+            onOpenActivityDrawer={() => {
+              setShowMonitorDrawer(true);
+              void loadMonitoredFeed(activeBusiness.id, monitoredAccount.userId);
+            }}
+            onSwitchAccount={handleStartMonitoring}
+            onExitMonitoring={handleStopMonitoring}
+          />
+        )}
+
         {/* Top Bar (Compact Sticky on Mobile <= 56px) */}
         <header className="sticky top-0 z-30 h-14 sm:h-16 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex items-center justify-between gap-2 sm:gap-4">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 sm:flex-initial">
@@ -1468,6 +1738,18 @@ function LeadFlowAppInner() {
           )}
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {/* Strictly Admin-Only Account Switcher & Live Monitor */}
+            {isTrueAdmin && activeBusiness && (
+              <AdminAccountSwitcher
+                lang={lang}
+                accounts={monitoredAccounts}
+                activeMonitored={monitoredAccount}
+                onStartMonitor={handleStartMonitoring}
+                onStopMonitor={handleStopMonitoring}
+                onRefreshAccounts={() => void loadMonitoredAccounts(activeBusiness.id)}
+              />
+            )}
+
             {/* Mobile Quick Search Toggle */}
             {activeBusiness && (
               <button
@@ -1692,7 +1974,16 @@ function LeadFlowAppInner() {
             </div>
 
             <div className="flex items-center gap-2">
-              {authUser.isOwner || authUser.username === DEFAULT_ADMIN_USERNAME || authUser.email?.toLowerCase() === MASTER_OWNER_EMAIL ? (
+              {monitoredAccount ? (
+                <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-sky-100 dark:bg-sky-900/50 px-2 py-0.5 text-[11px] font-bold text-[#0077B6] dark:text-cyan-300">
+                  <UserCheck className="h-3 w-3" />
+                  <span>
+                    {isAr
+                      ? `واجهة: ${monitoredAccount.fullName}`
+                      : `View: ${monitoredAccount.fullName}`}
+                  </span>
+                </span>
+              ) : authUser.isOwner || authUser.username === DEFAULT_ADMIN_USERNAME || authUser.email?.toLowerCase() === MASTER_OWNER_EMAIL ? (
                 <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-amber-100 dark:bg-amber-900/50 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:text-amber-200">
                   <Crown className="h-3 w-3" />
                   <span>{isAr ? 'المدير الرئيسي' : 'Owner'}</span>
@@ -1709,7 +2000,7 @@ function LeadFlowAppInner() {
                 </span>
               )}
               <span className="hidden sm:inline font-mono text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-40 truncate" dir="ltr">
-                {authUser.username || authUser.full_name}
+                {monitoredAccount ? `@${monitoredAccount.username}` : authUser.username || authUser.full_name}
               </span>
               <button
                 type="button"
@@ -1913,14 +2204,16 @@ function LeadFlowAppInner() {
 
               <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
                 {isPendingSheet ? (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('integrations')}
-                    className="inline-flex items-center gap-1 rounded-md bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] dark:hover:bg-[#0077B6] px-2.5 py-0.5 min-h-[26px] text-[11px] font-semibold text-white transition-colors"
-                  >
-                    <FileSpreadsheet className="h-3 w-3" />
-                    <span>{isAr ? 'ربط Google Sheet' : 'Link Google Sheet'}</span>
-                  </button>
+                  isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('integrations')}
+                      className="inline-flex items-center gap-1 rounded-md bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] dark:hover:bg-[#0077B6] px-2.5 py-0.5 min-h-[26px] text-[11px] font-semibold text-white transition-colors"
+                    >
+                      <FileSpreadsheet className="h-3 w-3" />
+                      <span>{isAr ? 'ربط Google Sheet' : 'Link Google Sheet'}</span>
+                    </button>
+                  ) : null
                 ) : (
                   <>
                     <button
@@ -1936,13 +2229,15 @@ function LeadFlowAppInner() {
                       <RefreshCw className={`h-3 w-3 ${syncingNow ? 'animate-spin' : ''}`} />
                       <span>{sheetStatus?.lastError ? (isAr ? 'إعادة' : 'Retry') : t.syncNow}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('integrations')}
-                      className="hidden sm:inline-flex items-center gap-1 font-semibold underline hover:opacity-85"
-                    >
-                      <span>{isAr ? 'إعدادات الشيت' : 'Sheet Source'}</span>
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('integrations')}
+                        className="hidden sm:inline-flex items-center gap-1 font-semibold underline hover:opacity-85"
+                      >
+                        <span>{isAr ? 'إعدادات الشيت' : 'Sheet Source'}</span>
+                      </button>
+                    )}
                   </>
                 )}
                 {activeBusiness.is_demo === 1 && (
@@ -2059,6 +2354,8 @@ function LeadFlowAppInner() {
                 userRole={effectiveRole}
                 currentUser={authUser}
                 members={members}
+                monitoredAccounts={isTrueAdmin ? monitoredAccounts : undefined}
+                onMonitorMember={isTrueAdmin ? handleStartMonitoring : undefined}
                 onRefresh={() => setRefreshCounter((c) => c + 1)}
                 onNotify={notify}
               />
@@ -2182,6 +2479,20 @@ function LeadFlowAppInner() {
           />
         )}
       </Suspense>
+
+      {/* Strictly Admin-Only Live Activity Drawer */}
+      {isTrueAdmin && activeBusiness && monitoredAccount && (
+        <AdminLiveActivityDrawer
+          lang={lang}
+          open={showMonitorDrawer}
+          account={monitoredAccount}
+          feed={monitoredFeed}
+          loading={loadingMonitorFeed}
+          onClose={() => setShowMonitorDrawer(false)}
+          onRefresh={() => void loadMonitoredFeed(activeBusiness.id, monitoredAccount.userId)}
+          onOpenLead={(leadId) => navigateToLead(leadId, activeBusiness.id, null)}
+        />
+      )}
     </div>
   );
 }

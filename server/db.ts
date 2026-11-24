@@ -461,6 +461,21 @@ function initSchema(db: SqlDb) {
       ip_address TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_presence (
+      business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      active_tab TEXT NOT NULL DEFAULT 'leads',
+      active_lead_id TEXT,
+      active_lead_name TEXT,
+      active_lead_code TEXT,
+      last_action_type TEXT,
+      last_action_ar TEXT,
+      last_action_en TEXT,
+      last_seen_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (business_id, user_id)
+    );
   `);
 
   const userCols = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;

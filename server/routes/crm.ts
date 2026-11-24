@@ -35,7 +35,6 @@ import {
 import { resetDemoData } from '../seedDemo.ts';
 import {
   CLINIC_WORKSPACE_ID,
-  addSseClient,
   broadcastWorkspaceEvent,
   ensureWorkspaceLiveSynced,
   extractGoogleSheetCsvUrl,
@@ -44,10 +43,16 @@ import {
   normalizeArabicDigits,
   parseCsvRows,
   removeSheetSourceFromConfig,
-  removeSseClient,
   syncSheetRowsToWorkspace,
   syncWorkspaceFromConfiguredSheet,
 } from '../services/sheetSyncService.ts';
+import {
+  addSseClient,
+  removeSseClient,
+  updateUserPresence,
+  recordMemberLiveAction,
+  getMonitoredAccountsSnapshot,
+} from '../services/realtimeService.ts';
 import { createAndBroadcastNotification } from '../services/notificationService.ts';
 
 export function createCrmRoutes(
@@ -316,7 +321,17 @@ export function createCrmRoutes(
     res.json({ reset: true });
   });
 
-  // Real-time Server-Sent Events (SSE) stream for live sheet & CRM updates
+  const isStrictAdminOwner = (req: AuthRequest): boolean => {
+    const role = req.membership?.role;
+    return Boolean(
+      req.authUser?.isOwner ||
+        req.authUser?.isPlatformSuperAdmin ||
+        role === 'super_admin' ||
+        role === 'business_admin'
+    );
+  };
+
+  // Real-time Server-Sent Events (SSE) stream for live sheet, CRM & Admin-only supervision updates
   router.get('/businesses/:businessId/events', async (req, res) => {
     const { businessId } = req.params;
     const biz = db.prepare('SELECT id, is_demo FROM businesses WHERE id = ?').get(businessId) as
@@ -325,6 +340,9 @@ export function createCrmRoutes(
     if (!biz) {
       return res.status(404).json({ error: 'Business workspace not found' });
     }
+
+    let sseUserId: string | null = null;
+    let sseIsAdmin = false;
 
     const tokenParam = typeof req.query.token === 'string' ? req.query.token.trim() : '';
     if (biz.is_demo !== 1 || tokenParam || process.env.NODE_ENV !== 'test') {
@@ -336,14 +354,23 @@ export function createCrmRoutes(
           const user = await resolveUserFromToken(db, tokenParam, tokenVerifier);
           const member = db
             .prepare(
-              `SELECT id FROM business_memberships
+              `SELECT id, role, account_slot FROM business_memberships
                WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
                LIMIT 1`
             )
-            .get(businessId, user.id, user.email || '');
+            .get(businessId, user.id, user.email || '') as
+            | { id: string; role: string; account_slot?: string }
+            | undefined;
           if (!member && !(user.isOwner && businessId === CLINIC_WORKSPACE_ID)) {
             return res.status(403).json({ error: 'Forbidden SSE stream' });
           }
+          sseUserId = user.id;
+          sseIsAdmin = Boolean(
+            user.isOwner ||
+              user.isPlatformSuperAdmin ||
+              member?.role === 'super_admin' ||
+              member?.role === 'business_admin'
+          );
         } catch {
           return res.status(401).json({ error: 'Invalid SSE token' });
         }
@@ -356,7 +383,7 @@ export function createCrmRoutes(
     res.flushHeaders?.();
 
     res.write(`event: connected\ndata: ${JSON.stringify({ businessId, connectedAt: new Date().toISOString() })}\n\n`);
-    addSseClient(businessId, res);
+    addSseClient(businessId, res, { userId: sseUserId, isAdmin: sseIsAdmin });
 
     const keepalive = setInterval(() => {
       try {
@@ -371,6 +398,133 @@ export function createCrmRoutes(
       removeSseClient(businessId, res);
     });
   });
+
+  // Live Client Presence Heartbeat (each signed-in non-admin member reports only their own current view)
+  router.post(
+    '/businesses/:businessId/presence',
+    authMiddleware,
+    requireBusinessAccess(db),
+    (req: AuthRequest, res) => {
+      const { businessId } = req.params;
+      const actorId = req.authUser?.id;
+      if (!actorId) return res.status(401).json({ error: 'Unauthorized' });
+
+      // Admin/Owner accounts are supervisors, not monitored targets
+      if (isStrictAdminOwner(req)) {
+        return res.json({ ok: true, skipped: true });
+      }
+
+      const { activeTab, activeLeadId, activeLeadName, activeLeadCode } = req.body || {};
+      const record = updateUserPresence(db, businessId, actorId, {
+        activeTab: typeof activeTab === 'string' ? activeTab : 'leads',
+        activeLeadId: activeLeadId === null ? null : typeof activeLeadId === 'string' ? activeLeadId : undefined,
+        activeLeadName: activeLeadName === null ? null : typeof activeLeadName === 'string' ? activeLeadName : undefined,
+        activeLeadCode: activeLeadCode === null ? null : typeof activeLeadCode === 'string' ? activeLeadCode : undefined,
+        broadcastToAdmins: true,
+      });
+
+      res.json({ ok: true, presence: record });
+    }
+  );
+
+  // ADMIN-ONLY: List all lower-privilege accounts with real-time online presence & current screen
+  router.get(
+    '/businesses/:businessId/monitor/accounts',
+    authMiddleware,
+    requireBusinessAccess(db, ['super_admin', 'business_admin']),
+    (req: AuthRequest, res) => {
+      if (!isStrictAdminOwner(req)) {
+        return res.status(403).json({ error: 'Forbidden: Only the Owner/Admin account can monitor team accounts' });
+      }
+      const { businessId } = req.params;
+      const accounts = getMonitoredAccountsSnapshot(db, businessId);
+      res.json({ accounts });
+    }
+  );
+
+  // ADMIN-ONLY: Detailed real-time activity feed & today's stats for a specific lower-privilege account
+  router.get(
+    '/businesses/:businessId/monitor/accounts/:memberUserId/feed',
+    authMiddleware,
+    requireBusinessAccess(db, ['super_admin', 'business_admin']),
+    (req: AuthRequest, res) => {
+      if (!isStrictAdminOwner(req)) {
+        return res.status(403).json({ error: 'Forbidden: Only the Owner/Admin account can monitor team accounts' });
+      }
+      const { businessId, memberUserId } = req.params;
+      const accounts = getMonitoredAccountsSnapshot(db, businessId);
+      const account = accounts.find((a) => a.userId === memberUserId || a.membershipId === memberUserId);
+      if (!account) {
+        return res.status(404).json({ error: 'Monitored account not found or is not a lower-privilege account' });
+      }
+
+      const uid = account.userId;
+      const todayPrefix = new Date().toISOString().slice(0, 10);
+
+      const activities = db
+        .prepare(`
+          SELECT a.id,
+                 a.activity_type,
+                 a.description_ar,
+                 a.description_en,
+                 a.lead_id,
+                 a.created_at,
+                 l.lead_code,
+                 l.full_name as lead_name
+          FROM lead_activities a
+          LEFT JOIN leads l ON l.id = a.lead_id
+          WHERE a.business_id = ? AND a.actor_user_id = ?
+          ORDER BY a.created_at DESC
+          LIMIT 50
+        `)
+        .all(businessId, uid) as Array<any>;
+
+      const todayRows = db
+        .prepare(`
+          SELECT activity_type, COUNT(*) as cnt
+          FROM lead_activities
+          WHERE business_id = ? AND actor_user_id = ? AND created_at LIKE ?
+          GROUP BY activity_type
+        `)
+        .all(businessId, uid, `${todayPrefix}%`) as Array<{ activity_type: string; cnt: number }>;
+
+      const statsMap = new Map<string, number>();
+      let totalActions = 0;
+      for (const r of todayRows) {
+        statsMap.set(r.activity_type, r.cnt);
+        totalActions += r.cnt;
+      }
+
+      const leadsOpenedTodayRow = db
+        .prepare(`
+          SELECT COUNT(*) as cnt
+          FROM leads
+          WHERE business_id = ? AND read_by_user_id = ? AND read_at LIKE ?
+        `)
+        .get(businessId, uid, `${todayPrefix}%`) as { cnt: number };
+
+      res.json({
+        account,
+        statsToday: {
+          totalActions,
+          whatsappContacts: statsMap.get('whatsapp_opened') || 0,
+          statusChanges: statsMap.get('status_changed') || 0,
+          notesAdded: statsMap.get('note_added') || 0,
+          leadsOpened: leadsOpenedTodayRow?.cnt || 0,
+        },
+        activities: activities.map((a) => ({
+          id: a.id,
+          activityType: a.activity_type,
+          descriptionAr: a.description_ar,
+          descriptionEn: a.description_en,
+          leadId: a.lead_id || null,
+          leadCode: a.lead_code || null,
+          leadName: a.lead_name || null,
+          createdAt: a.created_at,
+        })),
+      });
+    }
+  );
 
   // Sheet Sync Status & Real-Time Source Endpoints
   router.get('/businesses/:businessId/sheet-source/status', authMiddleware, requireBusinessAccess(db), async (req: AuthRequest, res) => {
@@ -1169,6 +1323,21 @@ export function createCrmRoutes(
       broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId, isRead: true });
     }
 
+    recordMemberLiveAction(db, {
+      businessId,
+      actorUserId: req.authUser?.id,
+      actorName: req.authUser?.fullName,
+      actorUsername: req.authUser?.username,
+      isActorOwnerOrAdmin: isStrictAdminOwner(req),
+      activityType: 'lead_viewed',
+      descriptionAr: `فتح ملف العميل "${lead.full_name}" (${lead.lead_code})`,
+      descriptionEn: `Opened lead profile "${lead.full_name}" (${lead.lead_code})`,
+      leadId: canonicalLeadId,
+      leadCode: lead.lead_code,
+      leadName: lead.full_name,
+      activeTab: 'leads',
+    });
+
     const statusHistory = db
       .prepare(`
         SELECT h.*, fs.name_ar as from_ar, fs.name_en as from_en, ts.name_ar as to_ar, ts.name_en as to_en, u.full_name as changed_by_name
@@ -1392,6 +1561,19 @@ export function createCrmRoutes(
       hints,
     });
     broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: existing.id });
+    recordMemberLiveAction(db, {
+      businessId,
+      actorUserId: req.authUser?.id,
+      actorName: req.authUser?.fullName,
+      actorUsername: req.authUser?.username,
+      isActorOwnerOrAdmin: isStrictAdminOwner(req),
+      activityType: 'status_changed',
+      descriptionAr: `غيّر حالة العميل "${existing.full_name}" إلى "${lead?.status_name_ar || '—'}"`,
+      descriptionEn: `Updated "${existing.full_name}" status to "${lead?.status_name_en || '—'}"`,
+      leadId: existing.id,
+      leadCode: existing.lead_code,
+      leadName: existing.full_name,
+    });
     res.json({ lead });
   });
 
@@ -1482,6 +1664,23 @@ export function createCrmRoutes(
 
       const updated = resolveLeadRecord(db, businessId, canonicalLeadId);
       broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
+      recordMemberLiveAction(db, {
+        businessId,
+        actorUserId: req.authUser?.id,
+        actorName: req.authUser?.fullName,
+        actorUsername: req.authUser?.username,
+        isActorOwnerOrAdmin: isStrictAdminOwner(req),
+        activityType: 'whatsapp_opened',
+        descriptionAr: statusChanged
+          ? `فتح شات واتساب مع "${existing.full_name}" وتحولت الحالة تلقائياً إلى "تم التواصل"`
+          : `فتح شات واتساب مع "${existing.full_name}"`,
+        descriptionEn: statusChanged
+          ? `Opened WhatsApp chat with "${existing.full_name}" (auto-moved to Contacted)`
+          : `Opened WhatsApp chat with "${existing.full_name}"`,
+        leadId: canonicalLeadId,
+        leadCode: existing.lead_code,
+        leadName: existing.full_name,
+      });
       res.json({ lead: updated, statusChanged, contactedStage: contactedStage || null });
     }
   );
@@ -1763,6 +1962,20 @@ export function createCrmRoutes(
       now
     );
 
+    recordMemberLiveAction(db, {
+      businessId,
+      actorUserId: req.authUser?.id,
+      actorName: req.authUser?.fullName,
+      actorUsername: req.authUser?.username,
+      isActorOwnerOrAdmin: isStrictAdminOwner(req),
+      activityType: 'note_added',
+      descriptionAr: `أضاف ${catLabel.ar} لملف "${lead.full_name}"${safeTitle ? `: ${safeTitle}` : ''}`,
+      descriptionEn: `Added ${catLabel.en} on "${lead.full_name}"${safeTitle ? `: ${safeTitle}` : ''}`,
+      leadId: canonicalLeadId,
+      leadCode: lead.lead_code,
+      leadName: lead.full_name,
+    });
+
     createAndBroadcastNotification(db, {
       businessId,
       userId: lead.assigned_to_user_id || null,
@@ -1991,6 +2204,20 @@ export function createCrmRoutes(
       JSON.stringify({ dueAt }),
       now
     );
+
+    recordMemberLiveAction(db, {
+      businessId,
+      actorUserId: req.authUser?.id,
+      actorName: req.authUser?.fullName,
+      actorUsername: req.authUser?.username,
+      isActorOwnerOrAdmin: isStrictAdminOwner(req),
+      activityType: 'follow_up_scheduled',
+      descriptionAr: `جدول متابعة للعميل "${lead.full_name}": ${title.trim()}`,
+      descriptionEn: `Scheduled follow-up for "${lead.full_name}": ${title.trim()}`,
+      leadId: canonicalLeadId,
+      leadCode: lead.lead_code,
+      leadName: lead.full_name,
+    });
 
     createAndBroadcastNotification(db, {
       businessId,

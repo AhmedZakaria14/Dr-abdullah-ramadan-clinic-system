@@ -253,3 +253,47 @@ export interface NotificationItem {
   is_read: number;
   created_at: string;
 }
+
+export interface MonitoredAccountPresence {
+  membershipId: string;
+  userId: string;
+  fullName: string;
+  username: string;
+  email: string;
+  role: Role;
+  accountSlot: 'manager' | 'moderator' | 'accountant';
+  status: 'active' | 'invited' | 'inactive';
+  online: boolean;
+  activeTab: string;
+  activeLeadId?: string | null;
+  activeLeadName?: string | null;
+  activeLeadCode?: string | null;
+  lastActionType?: string | null;
+  lastActionAr?: string | null;
+  lastActionEn?: string | null;
+  lastSeenAt?: string | null;
+  todayActionsCount: number;
+}
+
+export interface MonitoredActivityItem {
+  id: string;
+  activityType: string;
+  descriptionAr: string;
+  descriptionEn: string;
+  leadId?: string | null;
+  leadCode?: string | null;
+  leadName?: string | null;
+  createdAt: string;
+}
+
+export interface MonitoredAccountFeedResponse {
+  account: MonitoredAccountPresence;
+  statsToday: {
+    totalActions: number;
+    whatsappContacts: number;
+    statusChanges: number;
+    notesAdded: number;
+    leadsOpened: number;
+  };
+  activities: MonitoredActivityItem[];
+}

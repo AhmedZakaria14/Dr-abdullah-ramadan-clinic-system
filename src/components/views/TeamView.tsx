@@ -15,11 +15,14 @@ import {
   Eye,
   EyeOff,
   Copy,
+  Radio,
+  ArrowLeftRight,
 } from 'lucide-react';
 import {
   AccountSlot,
   Business,
   Language,
+  MonitoredAccountPresence,
   Role,
   TeamMember,
   UserProfile,
@@ -38,6 +41,8 @@ interface TeamViewProps {
   userRole: Role;
   currentUser: UserProfile;
   members: TeamMember[];
+  monitoredAccounts?: MonitoredAccountPresence[];
+  onMonitorMember?: (account: MonitoredAccountPresence) => void;
   onRefresh: () => void;
   onNotify: (msg: string, variant?: 'success' | 'error' | 'info') => void;
 }
@@ -48,6 +53,8 @@ export const TeamView: React.FC<TeamViewProps> = ({
   userRole,
   currentUser,
   members,
+  monitoredAccounts = [],
+  onMonitorMember,
   onRefresh,
   onNotify,
 }) => {
@@ -93,6 +100,46 @@ export const TeamView: React.FC<TeamViewProps> = ({
     if (isOwnerRow) return 'manager';
     if (member.account_slot === 'moderator' || member.role === 'moderator') return 'moderator';
     return 'manager';
+  };
+
+  const resolveMonitorTarget = (
+    member: TeamMember,
+    isOwnerRow: boolean,
+    slot: AccountSlot
+  ): MonitoredAccountPresence | null => {
+    if (!isAdmin || !onMonitorMember || isOwnerRow) return null;
+    const isLowerPrivilege =
+      slot === 'moderator' ||
+      member.role === 'moderator' ||
+      member.role === 'employee' ||
+      member.role === 'manager';
+    if (!isLowerPrivilege || !member.user_id) return null;
+
+    const existing = monitoredAccounts.find(
+      (a) => a.userId === member.user_id || a.membershipId === member.id
+    );
+    if (existing) return existing;
+
+    return {
+      userId: member.user_id,
+      membershipId: member.id,
+      username: member.username || member.invited_email.split('@')[0],
+      fullName: member.full_name || member.display_name || member.username || member.invited_email,
+      email: member.invited_email,
+      role: member.role,
+      accountSlot: slot,
+      status: member.status,
+      online: false,
+      activeTab: 'leads',
+      activeLeadId: null,
+      activeLeadName: null,
+      activeLeadCode: null,
+      lastActionType: null,
+      lastActionAr: null,
+      lastActionEn: null,
+      lastSeenAt: null,
+      todayActionsCount: 0,
+    };
   };
 
   const handleCreateOrUpdateAccount = async (e: React.FormEvent) => {
@@ -591,12 +638,21 @@ export const TeamView: React.FC<TeamViewProps> = ({
               emailLower === MASTER_OWNER_EMAIL;
             const slot = resolveMemberSlot(m, isOwnerRow);
             const isModRow = slot === 'moderator';
+            const monitorTarget = resolveMonitorTarget(m, isOwnerRow, slot);
 
             return (
               <div key={m.id} className="p-4 space-y-2.5 text-xs">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 font-bold text-sm text-slate-900 dark:text-slate-100">
+                      {monitorTarget && (
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                            monitorTarget.online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-slate-600'
+                          }`}
+                          title={monitorTarget.online ? (isAr ? 'متصل الآن' : 'Online now') : isAr ? 'غير متصل' : 'Offline'}
+                        />
+                      )}
                       <span className="truncate">{m.full_name || m.display_name || '—'}</span>
                       {isOwnerRow && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-amber-100 dark:bg-amber-900/50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-200 shrink-0">
@@ -625,6 +681,20 @@ export const TeamView: React.FC<TeamViewProps> = ({
                 <div className="flex flex-wrap items-center gap-2 pt-1">
                   {isAdmin && !isOwnerRow ? (
                     <>
+                      {monitorTarget && onMonitorMember && (
+                        <button
+                          type="button"
+                          onClick={() => onMonitorMember(monitorTarget)}
+                          className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-3 min-h-[38px] text-xs font-semibold text-white transition-colors"
+                        >
+                          <Radio className={`h-3.5 w-3.5 ${monitorTarget.online ? 'animate-pulse text-emerald-300' : ''}`} />
+                          <span>
+                            {isAr
+                              ? `دخول واجهة الحساب والمراقبة اللحظية${monitorTarget.online ? ' (متصل الآن)' : ''}`
+                              : `Enter Account Interface & Monitor Live${monitorTarget.online ? ' (Online)' : ''}`}
+                          </span>
+                        </button>
+                      )}
                       <select
                         value={slot}
                         onChange={(e) => handleUpdateMember(m, { accountSlot: e.target.value as AccountSlot })}
@@ -727,17 +797,31 @@ export const TeamView: React.FC<TeamViewProps> = ({
                   emailLower === MASTER_OWNER_EMAIL;
                 const slot = resolveMemberSlot(m, isOwnerRow);
                 const isModRow = slot === 'moderator';
+                const monitorTarget = resolveMonitorTarget(m, isOwnerRow, slot);
 
                 return (
                   <React.Fragment key={m.id}>
                     <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                       <td className="py-3 px-4 font-semibold text-slate-900 dark:text-slate-100">
                         <div className="flex items-center gap-2">
+                          {monitorTarget && (
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                                monitorTarget.online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-slate-600'
+                              }`}
+                              title={monitorTarget.online ? (isAr ? 'متصل الآن' : 'Online now') : isAr ? 'غير متصل' : 'Offline'}
+                            />
+                          )}
                           <span>{m.full_name || m.display_name || '—'}</span>
                           {isOwnerRow && (
                             <span className="inline-flex items-center gap-1 rounded-md bg-amber-100 dark:bg-amber-900/50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-200">
                               <Crown className="h-3 w-3" />
                               <span>{isAr ? 'الرئيسي' : 'Owner'}</span>
+                            </span>
+                          )}
+                          {monitorTarget?.online && (
+                            <span className="rounded bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                              {isAr ? 'متصل الآن' : 'Online'}
                             </span>
                           )}
                         </div>
@@ -804,6 +888,21 @@ export const TeamView: React.FC<TeamViewProps> = ({
                       <td className="py-3 px-4 text-end">
                         {!isOwnerRow && isAdmin ? (
                           <div className="inline-flex items-center gap-1.5">
+                            {monitorTarget && onMonitorMember && (
+                              <button
+                                type="button"
+                                onClick={() => onMonitorMember(monitorTarget)}
+                                className="inline-flex items-center gap-1 rounded-md bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors"
+                                title={
+                                  isAr
+                                    ? 'التحويل لواجهة هذا الحساب ومراقبة نشاطه لحظياً (حصرية للأدمن)'
+                                    : 'Switch into this account interface and monitor live (Admin only)'
+                                }
+                              >
+                                <ArrowLeftRight className="h-3 w-3" />
+                                <span>{isAr ? 'مراقبة لحظية' : 'Monitor Live'}</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
