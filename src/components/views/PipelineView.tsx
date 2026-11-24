@@ -3,6 +3,7 @@ import { Settings2, Plus, Trash2, ArrowUp, ArrowDown, Phone } from 'lucide-react
 import { Language, Lead, PipelineStage, Role } from '../../types/crm';
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
+import { markLeadReadLocally, reconcileLeadsReadState } from '../../lib/leadReadState';
 
 interface PipelineViewProps {
   lang: Language;
@@ -38,7 +39,14 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   const fetchBoardLeads = async () => {
     try {
       const res = await apiRequest<{ leads: Lead[] }>(`/businesses/${businessId}/leads?pageSize=100`);
-      setLeads(res.leads);
+      const { leads: reconciled, unsyncedIds } = reconcileLeadsReadState(businessId, res.leads || []);
+      setLeads(reconciled);
+      if (unsyncedIds.length > 0 && userRole !== 'employee') {
+        apiRequest(`/businesses/${businessId}/leads/bulk`, {
+          method: 'POST',
+          body: JSON.stringify({ leadIds: unsyncedIds, action: 'mark_read' }),
+        }).catch(() => {});
+      }
     } catch (err: any) {
       onNotify(err.message, 'error');
     }
@@ -324,11 +332,14 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
                       key={lead.id}
                       draggable
                       onDragStart={() => setDraggingId(lead.id)}
-                      onClick={() => onSelectLead(lead.id, lead)}
-                      className={`rounded-lg border border-s-4 p-3 cursor-grab active:cursor-grabbing transition-colors crm-cv-auto ${
+                      onClick={() => {
+                        markLeadReadLocally(businessId, lead);
+                        onSelectLead(lead.id, { ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
+                      }}
+                      className={`rounded-lg border border-s-4 p-3 cursor-pointer active:cursor-grabbing transition-colors crm-cv-auto ${
                         isUnread
                           ? 'border-red-200 dark:border-red-900/70 border-s-red-600 bg-red-50/75 dark:bg-red-950/25 hover:border-red-400'
-                          : 'border-emerald-200/80 dark:border-emerald-900/50 border-s-emerald-600 bg-white dark:bg-slate-900 hover:border-emerald-400'
+                          : 'border-emerald-200 dark:border-emerald-900/60 border-s-emerald-600 bg-emerald-50/70 dark:bg-emerald-950/25 hover:border-emerald-400'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
@@ -339,8 +350,10 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
                           />
                           <span className="font-mono text-slate-600 dark:text-slate-300">{lead.lead_code}</span>
                           <span
-                            className={`text-[10px] font-bold ${
-                              isUnread ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold border ${
+                              isUnread
+                                ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                                : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                             }`}
                           >
                             {isUnread ? (isAr ? 'جديد' : 'New') : isAr ? 'مقروء' : 'Read'}

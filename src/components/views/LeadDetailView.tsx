@@ -36,6 +36,7 @@ import {
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
+import { markLeadReadLocally, markLeadUnreadLocally } from '../../lib/leadReadState';
 import {
   buildLeadWhatsAppMessage,
   buildLeadWhatsAppUrl,
@@ -173,9 +174,14 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
       setActivities(res.activities || []);
       setFollowUps(res.followUps || []);
       setDuplicates(res.duplicates || []);
-      if (res.lead && notifiedReadLeadRef.current !== res.lead.id) {
-        notifiedReadLeadRef.current = res.lead.id;
-        onUpdated();
+      if (res.lead) {
+        if (res.lead.is_read) {
+          markLeadReadLocally(businessId, res.lead);
+        }
+        if (notifiedReadLeadRef.current !== res.lead.id) {
+          notifiedReadLeadRef.current = res.lead.id;
+          onUpdated();
+        }
       }
     } catch (err: any) {
       if (!lead && !initialLead) {
@@ -222,6 +228,11 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
           }),
         }
       );
+      if (nextIsRead) {
+        markLeadReadLocally(businessId, res.lead || lead);
+      } else {
+        markLeadUnreadLocally(businessId, res.lead || lead);
+      }
       setLead((prev) => (prev ? { ...prev, ...res.lead, is_read: nextIsRead ? 1 : 0 } : prev));
       onUpdated();
       onNotify(
@@ -531,10 +542,10 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     <div className="space-y-4 sm:space-y-6 crm-animate-enter">
       {/* Hero Header + Interactive Stage Progress */}
       <div
-        className={`rounded-xl border border-s-4 bg-white dark:bg-slate-900 overflow-hidden ${
+        className={`rounded-xl border border-s-4 overflow-hidden ${
           isUnread
-            ? 'border-red-200 dark:border-red-900/70 border-s-red-600'
-            : 'border-emerald-200/80 dark:border-emerald-900/60 border-s-emerald-600'
+            ? 'border-red-200 dark:border-red-900/70 border-s-red-600 bg-red-50/40 dark:bg-red-950/15'
+            : 'border-emerald-200 dark:border-emerald-900/60 border-s-emerald-600 bg-emerald-50/45 dark:bg-emerald-950/15'
         }`}
       >
         <div className="p-4 sm:p-6">
@@ -543,7 +554,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
               <button
                 type="button"
                 onClick={onBack}
-                className="mt-0.5 rounded-lg border border-slate-200 dark:border-slate-700 min-h-[42px] min-w-[42px] sm:min-h-0 sm:min-w-0 sm:p-2 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+                className="mt-0.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-[42px] min-w-[42px] sm:min-h-0 sm:min-w-0 sm:p-2 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                 title={isAr ? 'العودة لقائمة العملاء' : 'Back to Leads'}
                 aria-label={isAr ? 'العودة لقائمة العملاء' : 'Back to Leads'}
               >
@@ -583,8 +594,10 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   )}
                   <span aria-hidden="true">·</span>
                   <span
-                    className={`inline-flex items-center gap-1 font-bold ${
-                      isUnread ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-bold border ${
+                      isUnread
+                        ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                        : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                     }`}
                   >
                     <span

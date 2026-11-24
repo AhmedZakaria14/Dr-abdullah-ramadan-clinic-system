@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Search, X, Loader2, ArrowUpRight, Building2, Phone, Users } from 'lucide-react';
 import { Language, Lead } from '../../types/crm';
 import { apiRequest } from '../../lib/api';
+import { markLeadReadLocally, reconcileLeadsReadState } from '../../lib/leadReadState';
 
 interface GlobalLeadSearchProps {
   lang: Language;
@@ -88,7 +89,8 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
           `/businesses/${businessId}/leads?q=${encodeURIComponent(trimmed)}&page=1&pageSize=8`
         );
         if (cancelled) return;
-        setResults(res.leads || []);
+        const { leads: reconciled } = reconcileLeadsReadState(businessId, res.leads || []);
+        setResults(reconciled);
         setTotalMatches(res.total || 0);
         setActiveIndex(0);
         setOpen(true);
@@ -109,9 +111,10 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
   }, [businessId, query]);
 
   const handleChooseLead = (lead: Lead) => {
+    markLeadReadLocally(businessId, lead);
     setOpen(false);
     setQuery('');
-    onSelectLead(lead.id, lead);
+    onSelectLead(lead.id, { ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -246,9 +249,9 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
                     className={`w-full text-start px-3.5 sm:px-4 py-3 min-h-[52px] border-s-4 flex items-center justify-between gap-3 transition-colors ${
                       isUnread
                         ? 'border-s-red-600 ' +
-                          (isSelected ? 'bg-red-50/90 dark:bg-red-950/35' : 'bg-red-50/50 dark:bg-red-950/15 hover:bg-red-50 dark:hover:bg-red-950/25')
+                          (isSelected ? 'bg-red-100/80 dark:bg-red-950/40' : 'bg-red-50/65 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/30')
                         : 'border-s-emerald-600 ' +
-                          (isSelected ? 'bg-emerald-50/70 dark:bg-emerald-950/30' : 'hover:bg-emerald-50/40 dark:hover:bg-emerald-950/15')
+                          (isSelected ? 'bg-emerald-100/80 dark:bg-emerald-950/35' : 'bg-emerald-50/65 dark:bg-emerald-950/20 hover:bg-emerald-100/60 dark:hover:bg-emerald-950/30')
                     }`}
                   >
                     <div className="flex items-start gap-3 min-w-0 flex-1">
@@ -269,12 +272,14 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
                           <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
                             {lead.full_name}
                           </span>
-                          <span className="font-mono text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded tabular-nums">
+                          <span className="font-mono text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-white/80 dark:bg-slate-800 px-1.5 py-0.5 rounded tabular-nums">
                             {lead.lead_code}
                           </span>
                           <span
-                            className={`text-[10px] font-bold ${
-                              isUnread ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold border ${
+                              isUnread
+                                ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                                : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                             }`}
                           >
                             {isUnread ? (isAr ? 'جديد' : 'New') : isAr ? 'مقروء' : 'Read'}

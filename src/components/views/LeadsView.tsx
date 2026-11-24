@@ -35,6 +35,13 @@ import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
 import { exportLeadsToPdf } from '../../lib/pdfExport';
 import { buildLeadWhatsAppUrl, detectLeadDialect } from '../../lib/whatsappMessage';
+import {
+  markLeadReadLocally,
+  markLeadsReadLocally,
+  markLeadsUnreadLocally,
+  markLeadUnreadLocally,
+  reconcileLeadsReadState,
+} from '../../lib/leadReadState';
 
 interface LeadsViewProps {
   lang: Language;
@@ -214,14 +221,36 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       const res = await apiRequest<{ leads: Lead[]; total: number; totalPages: number; unreadCount?: number }>(
         `/businesses/${businessId}/leads?${qs.toString()}`
       );
-      setLeads(res.leads);
+      const { leads: reconciledLeads, unsyncedIds, reconciledCount } = reconcileLeadsReadState(
+        businessId,
+        res.leads
+      );
+      const visibleLeads =
+        readState === 'unread' ? reconciledLeads.filter((l) => !l.is_read) : reconciledLeads;
+
+      setLeads(visibleLeads);
       setTotal(res.total);
       setTotalPages(res.totalPages);
-      if (typeof res.unreadCount === 'number') setUnreadCount(res.unreadCount);
+      if (typeof res.unreadCount === 'number') {
+        setUnreadCount(Math.max(0, res.unreadCount - reconciledCount));
+      }
       setSelectedIds([]);
       if (peekLead) {
-        const refreshed = res.leads.find((l) => l.id === peekLead.id);
+        const refreshed = reconciledLeads.find((l) => l.id === peekLead.id);
         if (refreshed) setPeekLead(refreshed);
+      }
+
+      if (unsyncedIds.length > 0 && canManage) {
+        apiRequest(`/businesses/${businessId}/leads/bulk`, {
+          method: 'POST',
+          body: JSON.stringify({ leadIds: unsyncedIds, action: 'mark_read' }),
+        })
+          .then(() => {
+            onLeadReadChanged?.();
+          })
+          .catch(() => {
+            // ignore silent reconciliation failure
+          });
       }
     } catch (err: any) {
       onNotify(err.message, 'error');
@@ -338,11 +367,29 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     );
   };
 
+  const handleOpenLeadProfile = (lead: Lead) => {
+    const nowIso = new Date().toISOString();
+    markLeadReadLocally(businessId, lead);
+    if (!lead.is_read) {
+      applyLeadReadStateLocally(lead.id, true);
+    }
+    onSelectLead(lead.id, {
+      ...lead,
+      is_read: 1,
+      read_at: lead.read_at || nowIso,
+    });
+  };
+
   const handleToggleLeadRead = async (leadId: string, nextIsRead: boolean, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const prevLead = leads.find((l) => l.id === leadId) || (peekLead?.id === leadId ? peekLead : undefined);
     const prevRead = Boolean(prevLead?.is_read);
     applyLeadReadStateLocally(leadId, nextIsRead);
+    if (nextIsRead) {
+      markLeadReadLocally(businessId, prevLead || leadId);
+    } else {
+      markLeadUnreadLocally(businessId, prevLead || leadId);
+    }
     try {
       await apiRequest(`/businesses/${businessId}/leads/${encodeURIComponent(leadId)}/read`, {
         method: 'POST',
@@ -369,6 +416,8 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       );
     } catch (err: any) {
       applyLeadReadStateLocally(leadId, prevRead);
+      if (prevRead) markLeadReadLocally(businessId, prevLead || leadId);
+      else markLeadUnreadLocally(businessId, prevLead || leadId);
       onNotify(err.message, 'error');
     }
   };
@@ -378,6 +427,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     setMarkingAllRead(true);
     const prevCount = unreadCount;
     const nowIso = new Date().toISOString();
+    markLeadsReadLocally(businessId, leads);
     setLeads((prev) => prev.map((l) => (l.is_read ? l : { ...l, is_read: 1, read_at: nowIso })));
     setUnreadCount(0);
     try {
@@ -407,11 +457,13 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
 
   const handleOpenPeek = (lead: Lead, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    markLeadReadLocally(businessId, lead);
     setPeekLead({ ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
     if (!lead.is_read) {
       applyLeadReadStateLocally(lead.id, true);
       apiRequest(`/businesses/${businessId}/leads/${encodeURIComponent(lead.id)}/read`, {
         method: 'POST',
+        keepalive: true,
         body: JSON.stringify({
           isRead: true,
           leadCode: lead.lead_code,
@@ -444,6 +496,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       });
       const stage = stages.find((s) => s.id === statusId);
       const wasUnread = targetBefore ? !targetBefore.is_read : false;
+      markLeadReadLocally(businessId, targetBefore || leadId);
       setLeads((prev) =>
         prev.map((l) =>
           l.id === leadId
@@ -488,6 +541,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
 
   const handleWhatsAppContact = (lead: Lead, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    markLeadReadLocally(businessId, lead);
     const contactedStage =
       stages.find((s) => s.key?.toLowerCase() === 'contacted') ||
       stages.find((s) => s.name_ar?.includes('تم التواصل') || s.name_en?.toLowerCase().includes('contacted'));
@@ -624,6 +678,12 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
 
   const handleBulkReadState = async (action: 'mark_read' | 'mark_unread') => {
     if (selectedIds.length === 0) return;
+    const selectedLeads = leads.filter((l) => selectedIds.includes(l.id));
+    if (action === 'mark_read') {
+      markLeadsReadLocally(businessId, selectedLeads);
+    } else {
+      markLeadsUnreadLocally(businessId, selectedLeads);
+    }
     try {
       await apiRequest(`/businesses/${businessId}/leads/bulk`, {
         method: 'POST',
@@ -1188,11 +1248,11 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                 return (
                   <div
                     key={lead.id}
-                    onClick={() => onSelectLead(lead.id, lead)}
-                    className={`p-3 space-y-2 border-s-4 transition-colors crm-cv-auto ${
+                    onClick={() => handleOpenLeadProfile(lead)}
+                    className={`p-3 space-y-2 border-s-4 transition-colors crm-cv-auto cursor-pointer ${
                       isUnread
-                        ? 'border-s-red-600 bg-red-50/60 dark:bg-red-950/20 active:bg-red-100/70 dark:active:bg-red-950/35'
-                        : 'border-s-emerald-600 bg-emerald-50/30 dark:bg-emerald-950/15 active:bg-emerald-50/65 dark:active:bg-emerald-950/25'
+                        ? 'border-s-red-600 bg-red-50/70 dark:bg-red-950/25 active:bg-red-100/80 dark:active:bg-red-950/40'
+                        : 'border-s-emerald-600 bg-emerald-50/75 dark:bg-emerald-950/25 active:bg-emerald-100/75 dark:active:bg-emerald-950/35'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -1368,7 +1428,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onSelectLead(lead.id, lead)}
+                          onClick={() => handleOpenLeadProfile(lead)}
                           className="inline-flex items-center justify-center rounded-lg bg-[#0077B6] dark:bg-[#0096C7] text-white min-h-[34px] min-w-[34px]"
                           aria-label={isAr ? 'فتح الملف' : 'Open profile'}
                         >
@@ -1489,21 +1549,29 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                       : '';
                   const isPeeking = peekLead?.id === lead.id;
                   const isUnread = !lead.is_read;
+                  const firstCellBorderClass = isPeeking
+                    ? 'border-s-4 border-s-[#0088CC]'
+                    : isUnread
+                      ? 'border-s-4 border-s-red-600'
+                      : 'border-s-4 border-s-emerald-600';
 
                   return (
                     <tr
                       key={lead.id}
-                      onClick={() => onSelectLead(lead.id, lead)}
-                      className={`group cursor-pointer border-s-4 transition-colors duration-150 ${
+                      onClick={() => handleOpenLeadProfile(lead)}
+                      className={`group cursor-pointer transition-colors duration-150 ${
                         isPeeking
-                          ? 'border-s-[#0088CC] bg-sky-50/75 dark:bg-sky-950/30'
+                          ? 'bg-sky-50/80 dark:bg-sky-950/30'
                           : isUnread
-                            ? 'border-s-red-600 bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/35'
-                            : 'border-s-emerald-600 bg-emerald-50/25 dark:bg-emerald-950/10 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/25'
+                            ? 'bg-red-50/70 dark:bg-red-950/20 hover:bg-red-100/75 dark:hover:bg-red-950/35'
+                            : 'bg-emerald-50/75 dark:bg-emerald-950/25 hover:bg-emerald-100/80 dark:hover:bg-emerald-950/40'
                       }`}
                     >
                       {canManage && (
-                        <td className="py-3 px-3 align-top" onClick={(e) => e.stopPropagation()}>
+                        <td
+                          className={`py-3 px-3 align-top ${firstCellBorderClass}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <input
                             type="checkbox"
                             checked={selectedIds.includes(lead.id)}
@@ -1518,15 +1586,23 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                       )}
 
                       {visibleCols.lead_code && (
-                        <td className="py-3 px-3 align-top whitespace-nowrap">
-                          <span className="inline-block font-mono text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200/70 dark:border-slate-700/70 tabular-nums">
+                        <td
+                          className={`py-3 px-3 align-top whitespace-nowrap ${
+                            !canManage ? firstCellBorderClass : ''
+                          }`}
+                        >
+                          <span className="inline-block font-mono text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-white/80 dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200/70 dark:border-slate-700/70 tabular-nums">
                             {lead.lead_code}
                           </span>
                         </td>
                       )}
 
                       {visibleCols.full_name && (
-                        <td className="py-3 px-3 align-top min-w-[190px]">
+                        <td
+                          className={`py-3 px-3 align-top min-w-[190px] ${
+                            !canManage && !visibleCols.lead_code ? firstCellBorderClass : ''
+                          }`}
+                        >
                           <div className="flex items-start gap-2.5">
                             <div
                               className="h-8 w-8 rounded-lg flex items-center justify-center text-[11px] font-bold text-white shrink-0 mt-0.5 relative"
@@ -1546,10 +1622,16 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                                   {lead.full_name}
                                 </span>
                                 <span
-                                  className={`text-[10px] font-bold shrink-0 ${
-                                    isUnread ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                                  className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold shrink-0 border ${
+                                    isUnread
+                                      ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                                      : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                                   }`}
                                 >
+                                  <span
+                                    className={`h-1.5 w-1.5 rounded-full ${isUnread ? 'bg-red-600' : 'bg-emerald-600'}`}
+                                    aria-hidden="true"
+                                  />
                                   {isUnread ? (isAr ? 'جديد' : 'New') : isAr ? 'مقروء' : 'Read'}
                                 </span>
                               </div>
@@ -2132,7 +2214,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                 onClick={() => {
                   const target = peekLead;
                   setPeekLead(null);
-                  onSelectLead(target.id, target);
+                  handleOpenLeadProfile(target);
                 }}
                 className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] dark:hover:bg-[#0077B6] px-4 min-h-[42px] sm:min-h-0 sm:py-2 text-xs font-semibold text-white transition-colors"
               >

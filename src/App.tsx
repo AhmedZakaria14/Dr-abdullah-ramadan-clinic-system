@@ -55,6 +55,7 @@ import {
   MASTER_OWNER_EMAIL,
 } from './lib/constants';
 import { apiRequest, getAuthToken, onUnauthorized, setAuthToken } from './lib/api';
+import { markLeadReadLocally } from './lib/leadReadState';
 import { formatCairoDateTime, formatCairoTimeOnly } from './lib/dateFormat';
 import {
   BrowserNotificationSupport,
@@ -435,12 +436,46 @@ function LeadFlowAppInner() {
   };
 
   const navigateToLead = (leadId: string, targetBusinessId?: string | null, initialLead?: Lead | null) => {
-    if (targetBusinessId && allBusinesses.some((b) => b.id === targetBusinessId) && targetBusinessId !== activeBusinessId) {
-      pendingDeepLinkRef.current = { leadId, businessId: targetBusinessId };
-      setActiveBusinessId(targetBusinessId);
+    const effectiveBizId =
+      targetBusinessId && allBusinesses.some((b) => b.id === targetBusinessId)
+        ? targetBusinessId
+        : activeBusinessId;
+    if (effectiveBizId && effectiveBizId !== activeBusinessId) {
+      pendingDeepLinkRef.current = { leadId, businessId: effectiveBizId };
+      setActiveBusinessId(effectiveBizId);
     }
+
+    const nowIso = new Date().toISOString();
+    const openedPreview: Lead | null = initialLead
+      ? {
+          ...initialLead,
+          is_read: 1,
+          read_at: initialLead.read_at || nowIso,
+        }
+      : null;
+
+    if (effectiveBizId && leadId) {
+      markLeadReadLocally(effectiveBizId, openedPreview || leadId);
+      apiRequest(`/businesses/${effectiveBizId}/leads/${encodeURIComponent(leadId)}/read`, {
+        method: 'POST',
+        keepalive: true,
+        body: JSON.stringify({
+          isRead: true,
+          leadCode: initialLead?.lead_code || undefined,
+          externalRowId: initialLead?.external_row_id || undefined,
+          phone: initialLead?.phone_e164 || initialLead?.phone || undefined,
+        }),
+      })
+        .then(() => {
+          setRefreshCounter((c) => c + 1);
+        })
+        .catch(() => {
+          // LeadDetailView GET /leads/:id will also mark it read
+        });
+    }
+
     setActiveTab('leads');
-    setSelectedLeadPreview(initialLead || null);
+    setSelectedLeadPreview(openedPreview);
     setSelectedLeadId(leadId);
     setShowNotifMenu(false);
     syncLeadUrl(leadId);
@@ -450,6 +485,7 @@ function LeadFlowAppInner() {
     setSelectedLeadId(null);
     setSelectedLeadPreview(null);
     syncLeadUrl(null);
+    setRefreshCounter((c) => c + 1);
   };
 
   const markSingleNotificationRead = async (notifId: string) => {
