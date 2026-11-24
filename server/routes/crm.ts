@@ -1600,7 +1600,7 @@ export function createCrmRoutes(
       const now = new Date().toISOString();
       const validActorId = resolveValidUserId(db, req.authUser?.id);
 
-      const contactedStage =
+      let contactedStage =
         (db
           .prepare("SELECT * FROM lead_statuses WHERE business_id = ? AND LOWER(key) = 'contacted' LIMIT 1")
           .get(businessId) as any) ||
@@ -1609,6 +1609,17 @@ export function createCrmRoutes(
             "SELECT * FROM lead_statuses WHERE business_id = ? AND (name_ar LIKE '%تم التواصل%' OR LOWER(name_en) LIKE '%contacted%') ORDER BY sort_order ASC LIMIT 1"
           )
           .get(businessId) as any);
+
+      if (!contactedStage) {
+        const newStageId = crypto.randomUUID();
+        db.prepare(
+          `INSERT INTO lead_statuses (id, business_id, key, name_ar, name_en, color, sort_order, is_default, is_converted, is_lost)
+           VALUES (?, ?, 'contacted', 'تم التواصل', 'Contacted', '#0EA5E9', 3, 0, 0, 0)`
+        ).run(newStageId, businessId);
+        contactedStage = db
+          .prepare('SELECT * FROM lead_statuses WHERE id = ?')
+          .get(newStageId) as any;
+      }
 
       let statusChanged = false;
       if (contactedStage && existing.status_id !== contactedStage.id) {

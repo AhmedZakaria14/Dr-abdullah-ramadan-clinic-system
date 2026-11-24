@@ -97,7 +97,8 @@ class SqlJsCompatDb implements SqlDb {
 
   prepare(sql: string): SqlStatement {
     const rawDb = this.rawDb;
-    const isCriticalWrite = /\b(users|business_memberships|revoked_accounts)\b|\bis_read\b/i.test(sql);
+    const isCriticalWrite =
+      /\b(users|business_memberships|revoked_accounts|lead_status_history)\b|\b(is_read|status_id)\b/i.test(sql);
     const schedulePersist = () => this.schedulePersist(isCriticalWrite);
 
     return {

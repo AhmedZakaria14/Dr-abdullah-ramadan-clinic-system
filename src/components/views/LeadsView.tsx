@@ -42,6 +42,15 @@ import {
   markLeadUnreadLocally,
   reconcileLeadsReadState,
 } from '../../lib/leadReadState';
+import {
+  applyContactedStageToLead,
+  clearLeadWhatsAppContactedLocally,
+  findContactedStage,
+  flushPendingWhatsAppContacts,
+  markLeadWhatsAppContactedLocally,
+  reconcileLeadsWhatsAppStatus,
+  sendWhatsAppContactRequest,
+} from '../../lib/leadWhatsAppState';
 
 interface LeadsViewProps {
   lang: Language;
@@ -203,7 +212,10 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     };
   }, [Boolean(peekLead)]);
 
+  const fetchSeqRef = useRef(0);
+
   const fetchLeads = async () => {
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
       const qs = new URLSearchParams({
@@ -221,9 +233,16 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       const res = await apiRequest<{ leads: Lead[]; total: number; totalPages: number; unreadCount?: number }>(
         `/businesses/${businessId}/leads?${qs.toString()}`
       );
-      const { leads: reconciledLeads, unsyncedIds, reconciledCount } = reconcileLeadsReadState(
+      if (seq !== fetchSeqRef.current) return;
+
+      const { leads: readReconciled, unsyncedIds, reconciledCount } = reconcileLeadsReadState(
         businessId,
         res.leads
+      );
+      const { leads: reconciledLeads, unsyncedLeads: unsyncedWaLeads } = reconcileLeadsWhatsAppStatus(
+        businessId,
+        readReconciled,
+        stages
       );
       const visibleLeads =
         readState === 'unread' ? reconciledLeads.filter((l) => !l.is_read) : reconciledLeads;
@@ -240,6 +259,16 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
         if (refreshed) setPeekLead(refreshed);
       }
 
+      if (unsyncedWaLeads.length > 0) {
+        Promise.all(unsyncedWaLeads.slice(0, 10).map((ul) => sendWhatsAppContactRequest(businessId, ul)))
+          .then((results) => {
+            if (results.some((r) => Boolean(r?.statusChanged))) {
+              onLeadReadChanged?.();
+            }
+          })
+          .catch(() => {});
+      }
+
       if (unsyncedIds.length > 0 && canManage) {
         apiRequest(`/businesses/${businessId}/leads/bulk`, {
           method: 'POST',
@@ -253,11 +282,40 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
           });
       }
     } catch (err: any) {
-      onNotify(err.message, 'error');
+      if (seq === fetchSeqRef.current) {
+        onNotify(err.message, 'error');
+      }
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
+
+  // When returning from the WhatsApp app/tab, flush any WhatsApp contacts whose background POST was suspended
+  useEffect(() => {
+    const syncOnReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      void flushPendingWhatsAppContacts(businessId).then((synced) => {
+        if (synced) onLeadReadChanged?.();
+      });
+    };
+    window.addEventListener('focus', syncOnReturn);
+    document.addEventListener('visibilitychange', syncOnReturn);
+    return () => {
+      window.removeEventListener('focus', syncOnReturn);
+      document.removeEventListener('visibilitychange', syncOnReturn);
+    };
+  }, [businessId]);
+
+  useEffect(() => {
+    if (stages.length === 0) return;
+    setLeads((prev) => {
+      if (prev.length === 0) return prev;
+      const { leads: reconciled } = reconcileLeadsWhatsAppStatus(businessId, prev, stages);
+      return reconciled;
+    });
+  }, [businessId, stages.length]);
 
   useEffect(() => {
     fetchLeads();
@@ -495,6 +553,10 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
         }),
       });
       const stage = stages.find((s) => s.id === statusId);
+      const contactedStage = findContactedStage(stages);
+      if (!contactedStage || statusId !== contactedStage.id) {
+        clearLeadWhatsAppContactedLocally(businessId, targetBefore || leadId);
+      }
       const wasUnread = targetBefore ? !targetBefore.is_read : false;
       markLeadReadLocally(businessId, targetBefore || leadId);
       setLeads((prev) =>
@@ -541,55 +603,33 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
 
   const handleWhatsAppContact = (lead: Lead, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    markLeadReadLocally(businessId, lead);
-    const contactedStage =
-      stages.find((s) => s.key?.toLowerCase() === 'contacted') ||
-      stages.find((s) => s.name_ar?.includes('تم التواصل') || s.name_en?.toLowerCase().includes('contacted'));
+    // Invalidate any earlier in-flight fetchLeads() so stale "new" rows cannot overwrite this click
+    fetchSeqRef.current += 1;
 
+    markLeadReadLocally(businessId, lead);
+    markLeadWhatsAppContactedLocally(businessId, lead);
+
+    const contactedStage = findContactedStage(stages);
     const wasUnread = !lead.is_read;
     const willChangeStatus = Boolean(contactedStage && lead.status_id !== contactedStage.id);
     const nowIso = new Date().toISOString();
 
-    // Optimistically reflect "تم التواصل" immediately while WhatsApp chat opens
+    // Immediately reflect "تم التواصل" in the list & quick-peek drawer while WhatsApp opens
     if (contactedStage || wasUnread) {
       setLeads((prev) =>
         prev.map((l) =>
           l.id === lead.id
-            ? {
-                ...l,
-                ...(contactedStage
-                  ? {
-                      status_id: contactedStage.id,
-                      status_key: contactedStage.key,
-                      status_name_ar: contactedStage.name_ar,
-                      status_name_en: contactedStage.name_en,
-                      status_color: contactedStage.color,
-                    }
-                  : {}),
-                is_read: 1,
-                read_at: l.read_at || nowIso,
-                last_contact_at: nowIso,
-              }
+            ? contactedStage
+              ? applyContactedStageToLead(l, contactedStage, nowIso)
+              : { ...l, is_read: 1, read_at: l.read_at || nowIso, last_contact_at: nowIso }
             : l
         )
       );
       setPeekLead((prev) =>
         prev && prev.id === lead.id
-          ? {
-              ...prev,
-              ...(contactedStage
-                ? {
-                    status_id: contactedStage.id,
-                    status_key: contactedStage.key,
-                    status_name_ar: contactedStage.name_ar,
-                    status_name_en: contactedStage.name_en,
-                    status_color: contactedStage.color,
-                  }
-                : {}),
-              is_read: 1,
-              read_at: prev.read_at || nowIso,
-              last_contact_at: nowIso,
-            }
+          ? contactedStage
+            ? applyContactedStageToLead(prev, contactedStage, nowIso)
+            : { ...prev, is_read: 1, read_at: prev.read_at || nowIso, last_contact_at: nowIso }
           : prev
       );
       if (wasUnread) {
@@ -597,42 +637,35 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       }
     }
 
-    apiRequest<{ lead?: Lead; statusChanged?: boolean }>(
-      `/businesses/${businessId}/leads/${encodeURIComponent(lead.id)}/whatsapp-contact`,
-      {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify({
-          leadCode: lead.lead_code,
-          externalRowId: lead.external_row_id,
-          phone: lead.phone_e164 || lead.phone,
-        }),
-      }
-    )
-      .then((res) => {
-        if (res?.lead) {
-          setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, ...res.lead } : l)));
-          setPeekLead((prev) => (prev && prev.id === lead.id ? { ...prev, ...res.lead } : prev));
-        }
-        if (wasUnread || res?.statusChanged) {
-          onLeadReadChanged?.();
-        }
-        if (res?.statusChanged || willChangeStatus) {
+    if (willChangeStatus) {
+      onNotify(
+        isAr
+          ? 'تم تحويل الحالة تلقائياً إلى "تم التواصل" بعد فتح واتساب'
+          : 'Status automatically updated to "Contacted" after opening WhatsApp',
+        'success'
+      );
+    }
+
+    void sendWhatsAppContactRequest(businessId, lead).then((res) => {
+      if (res?.lead) {
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, ...res.lead } : l)));
+        setPeekLead((prev) => (prev && prev.id === lead.id ? { ...prev, ...res.lead } : prev));
+        if (!willChangeStatus && res.statusChanged) {
           onNotify(
             isAr
               ? 'تم تحويل الحالة تلقائياً إلى "تم التواصل" بعد فتح واتساب'
               : 'Status automatically updated to "Contacted" after opening WhatsApp',
             'success'
           );
-          if (statusFilter || readState === 'unread') {
-            fetchLeads();
-          }
         }
-      })
-      .catch(() => {
-        // Re-sync with server if background update failed
-        fetchLeads();
-      });
+        if (wasUnread || res.statusChanged) {
+          onLeadReadChanged?.();
+        }
+        if (statusFilter || readState === 'unread') {
+          fetchLeads();
+        }
+      }
+    });
   };
 
   const toggleSort = (col: string) => {
@@ -1378,6 +1411,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                             target="_blank"
                             rel="noreferrer"
                             onClick={(e) => handleWhatsAppContact(lead, e)}
+                            onAuxClick={(e) => {
+                              if (e.button === 1) handleWhatsAppContact(lead, e);
+                            }}
                             className="inline-flex items-center justify-center rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 min-h-[34px] min-w-[34px]"
                             aria-label="WhatsApp"
                             title={
@@ -1806,6 +1842,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                               target="_blank"
                               rel="noreferrer"
                               onClick={(e) => handleWhatsAppContact(lead, e)}
+                              onAuxClick={(e) => {
+                                if (e.button === 1) handleWhatsAppContact(lead, e);
+                              }}
                               className="p-1.5 rounded-md text-slate-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
                               title={
                                 whatsappDialect
@@ -2174,6 +2213,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
                     target="_blank"
                     rel="noreferrer"
                     onClick={(e) => handleWhatsAppContact(peekLead, e)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) handleWhatsAppContact(peekLead, e);
+                    }}
                     title={
                       peekWhatsappDialect
                         ? isAr

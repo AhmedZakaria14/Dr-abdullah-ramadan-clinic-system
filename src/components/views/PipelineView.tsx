@@ -4,6 +4,12 @@ import { Language, Lead, PipelineStage, Role } from '../../types/crm';
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { markLeadReadLocally, reconcileLeadsReadState } from '../../lib/leadReadState';
+import {
+  clearLeadWhatsAppContactedLocally,
+  findContactedStage,
+  reconcileLeadsWhatsAppStatus,
+  sendWhatsAppContactRequest,
+} from '../../lib/leadWhatsAppState';
 
 interface PipelineViewProps {
   lang: Language;
@@ -39,8 +45,18 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   const fetchBoardLeads = async () => {
     try {
       const res = await apiRequest<{ leads: Lead[] }>(`/businesses/${businessId}/leads?pageSize=100`);
-      const { leads: reconciled, unsyncedIds } = reconcileLeadsReadState(businessId, res.leads || []);
+      const { leads: readReconciled, unsyncedIds } = reconcileLeadsReadState(businessId, res.leads || []);
+      const { leads: reconciled, unsyncedLeads: unsyncedWaLeads } = reconcileLeadsWhatsAppStatus(
+        businessId,
+        readReconciled,
+        stages
+      );
       setLeads(reconciled);
+      if (unsyncedWaLeads.length > 0) {
+        void Promise.all(
+          unsyncedWaLeads.slice(0, 10).map((ul) => sendWhatsAppContactRequest(businessId, ul))
+        );
+      }
       if (unsyncedIds.length > 0 && userRole !== 'employee') {
         apiRequest(`/businesses/${businessId}/leads/bulk`, {
           method: 'POST',
@@ -54,7 +70,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
 
   useEffect(() => {
     fetchBoardLeads();
-  }, [businessId]);
+  }, [businessId, stages.length]);
 
   const moveLeadToStage = async (leadId: string, toStatusId: string) => {
     const prevLeads = [...leads];
@@ -84,6 +100,10 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
           phone: targetLead?.phone_e164 || targetLead?.phone,
         }),
       });
+      const contactedStage = findContactedStage(stages);
+      if (!contactedStage || toStatusId !== contactedStage.id) {
+        clearLeadWhatsAppContactedLocally(businessId, targetLead || leadId);
+      }
       onNotify(isAr ? 'تم نقل العميل وتحديث سجل النشاط' : 'Lead moved and activity recorded', 'success');
     } catch (err: any) {
       setLeads(prevLeads);

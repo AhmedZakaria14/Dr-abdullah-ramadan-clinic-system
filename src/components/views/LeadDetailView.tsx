@@ -38,6 +38,15 @@ import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
 import { markLeadReadLocally, markLeadUnreadLocally } from '../../lib/leadReadState';
 import {
+  applyContactedStageToLead,
+  clearLeadWhatsAppContactedLocally,
+  findContactedStage,
+  flushPendingWhatsAppContacts,
+  markLeadWhatsAppContactedLocally,
+  reconcileLeadWhatsAppStatus,
+  sendWhatsAppContactRequest,
+} from '../../lib/leadWhatsAppState';
+import {
   buildLeadWhatsAppMessage,
   buildLeadWhatsAppUrl,
   detectLeadDialect,
@@ -144,6 +153,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   const [selectedDialect, setSelectedDialect] = useState<DialectCode | 'auto'>('auto');
   const [customWaDraft, setCustomWaDraft] = useState<string | null>(null);
   const notifiedReadLeadRef = React.useRef<string | null>(null);
+  const detailSeqRef = React.useRef(0);
 
   const buildHintsPayload = (sourceLead?: Lead | null) => {
     const ref = sourceLead || lead || initialLead;
@@ -155,6 +165,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   };
 
   const loadDetail = async () => {
+    const seq = ++detailSeqRef.current;
     const hintRef = lead || initialLead;
     if (!hintRef) {
       setLoading(true);
@@ -169,21 +180,36 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
       const res = await apiRequest<any>(
         `/businesses/${businessId}/leads/${encodeURIComponent(leadId)}${querySuffix}`
       );
-      setLead(res.lead);
+      if (seq !== detailSeqRef.current) return;
+
+      const reconciled = res.lead
+        ? reconcileLeadWhatsAppStatus(businessId, res.lead, stages)
+        : { lead: null, needsSync: false };
+
+      setLead(reconciled.lead);
       setNotes(res.notes || []);
       setActivities(res.activities || []);
       setFollowUps(res.followUps || []);
       setDuplicates(res.duplicates || []);
-      if (res.lead) {
-        if (res.lead.is_read) {
-          markLeadReadLocally(businessId, res.lead);
+      if (reconciled.lead) {
+        if (reconciled.lead.is_read) {
+          markLeadReadLocally(businessId, reconciled.lead);
         }
-        if (notifiedReadLeadRef.current !== res.lead.id) {
-          notifiedReadLeadRef.current = res.lead.id;
+        if (reconciled.needsSync) {
+          void sendWhatsAppContactRequest(businessId, reconciled.lead).then((syncRes) => {
+            if (syncRes?.lead) {
+              setLead((prev) => (prev ? { ...prev, ...syncRes.lead } : syncRes.lead!));
+              onUpdated();
+            }
+          });
+        }
+        if (notifiedReadLeadRef.current !== reconciled.lead.id) {
+          notifiedReadLeadRef.current = reconciled.lead.id;
           onUpdated();
         }
       }
     } catch (err: any) {
+      if (seq !== detailSeqRef.current) return;
       if (!lead && !initialLead) {
         onNotify(
           isAr ? 'تعذر العثور على هذا العميل، تمت إعادتك لقائمة العملاء' : 'Lead not found, returning to leads list',
@@ -194,7 +220,9 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
         onNotify(err.message, 'error');
       }
     } finally {
-      setLoading(false);
+      if (seq === detailSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -202,14 +230,47 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     setSelectedDialect('auto');
     setCustomWaDraft(null);
     if (initialLead) {
-      setLead({
-        ...initialLead,
-        is_read: 1,
-        read_at: initialLead.read_at || new Date().toISOString(),
-      });
+      const reconciledInit = reconcileLeadWhatsAppStatus(
+        businessId,
+        {
+          ...initialLead,
+          is_read: 1,
+          read_at: initialLead.read_at || new Date().toISOString(),
+        },
+        stages
+      );
+      setLead(reconciledInit.lead);
       setLoading(false);
     }
     loadDetail();
+  }, [businessId, leadId]);
+
+  useEffect(() => {
+    if (stages.length === 0) return;
+    setLead((prev) => {
+      if (!prev) return prev;
+      const { lead: reconciled } = reconcileLeadWhatsAppStatus(businessId, prev, stages);
+      return reconciled;
+    });
+  }, [businessId, stages.length]);
+
+  // Retry any WhatsApp status transition automatically when returning from WhatsApp app/tab
+  useEffect(() => {
+    const syncOnReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      void flushPendingWhatsAppContacts(businessId).then((synced) => {
+        if (synced) {
+          void loadDetail();
+          onUpdated();
+        }
+      });
+    };
+    window.addEventListener('focus', syncOnReturn);
+    document.addEventListener('visibilitychange', syncOnReturn);
+    return () => {
+      window.removeEventListener('focus', syncOnReturn);
+      document.removeEventListener('visibilitychange', syncOnReturn);
+    };
   }, [businessId, leadId]);
 
   const handleToggleRead = async () => {
@@ -274,6 +335,10 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
           ...buildHintsPayload(lead),
         }),
       });
+      const contactedStage = findContactedStage(stages);
+      if (!contactedStage || statusId !== contactedStage.id) {
+        clearLeadWhatsAppContactedLocally(businessId, lead || targetId);
+      }
       onNotify(isAr ? 'تم تحديث حالة العميل' : 'Lead status updated', 'success');
       await loadDetail();
       onUpdated();
@@ -288,44 +353,37 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     const activeLead = lead || initialLead;
     if (!activeLead) return;
 
-    const contactedStage =
-      stages.find((s) => s.key?.toLowerCase() === 'contacted') ||
-      stages.find((s) => s.name_ar?.includes('تم التواصل') || s.name_en?.toLowerCase().includes('contacted'));
+    // Prevent any earlier in-flight loadDetail() from reverting status back to "new"
+    detailSeqRef.current += 1;
 
     const targetId = activeLead.id || leadId;
+    const identityLead: Lead = { ...activeLead, id: targetId };
+    markLeadReadLocally(businessId, identityLead);
+    markLeadWhatsAppContactedLocally(businessId, identityLead);
+
+    const contactedStage = findContactedStage(stages);
+    const willChangeStatus = Boolean(contactedStage && activeLead.status_id !== contactedStage.id);
     const nowIso = new Date().toISOString();
 
     if (contactedStage) {
       setLead((prev) =>
-        prev
-          ? {
-              ...prev,
-              status_id: contactedStage.id,
-              status_key: contactedStage.key,
-              status_name_ar: contactedStage.name_ar,
-              status_name_en: contactedStage.name_en,
-              status_color: contactedStage.color,
-              is_read: 1,
-              read_at: prev.read_at || nowIso,
-              last_contact_at: nowIso,
-            }
-          : prev
+        prev ? applyContactedStageToLead(prev, contactedStage, nowIso) : prev
       );
     }
 
-    apiRequest<{ lead?: Lead; statusChanged?: boolean }>(
-      `/businesses/${businessId}/leads/${encodeURIComponent(targetId)}/whatsapp-contact`,
-      {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify(buildHintsPayload(activeLead)),
-      }
-    )
-      .then(async (res) => {
-        if (res?.lead) {
-          setLead((prev) => (prev ? { ...prev, ...res.lead } : res.lead!));
-        }
-        if (res?.statusChanged) {
+    if (willChangeStatus) {
+      onNotify(
+        isAr
+          ? 'تم تحويل الحالة تلقائياً إلى "تم التواصل" بعد فتح واتساب'
+          : 'Status automatically updated to "Contacted" after opening WhatsApp',
+        'success'
+      );
+    }
+
+    void sendWhatsAppContactRequest(businessId, identityLead).then(async (res) => {
+      if (res?.lead) {
+        setLead((prev) => (prev ? { ...prev, ...res.lead } : res.lead!));
+        if (!willChangeStatus && res.statusChanged) {
           onNotify(
             isAr
               ? 'تم تحويل الحالة تلقائياً إلى "تم التواصل" بعد فتح واتساب'
@@ -335,10 +393,8 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
         }
         await loadDetail();
         onUpdated();
-      })
-      .catch(() => {
-        loadDetail();
-      });
+      }
+    });
   };
 
   const handleAssign = async (assignedToUserId: string) => {
@@ -649,6 +705,9 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                   target="_blank"
                   rel="noreferrer"
                   onClick={handleWhatsAppContact}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) handleWhatsAppContact();
+                  }}
                   title={
                     isAr
                       ? `فتح واتساب برسالة جاهزة (${activeWaDialect.flag} ${activeWaDialect.dialectLabelAr})`
@@ -1060,16 +1119,33 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                     </div>
                   )}
                 </div>
-                {primaryPhone && (
-                  <button
-                    type="button"
-                    onClick={() => handleCopy('phone', primaryPhone)}
-                    className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-[#0077B6] transition-colors shrink-0"
-                    title={isAr ? 'نسخ الرقم' : 'Copy phone'}
-                  >
-                    {copiedKey === 'phone' ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
-                  </button>
-                )}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {whatsappUrl && (
+                    <a
+                      href={whatsappUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={handleWhatsAppContact}
+                      onAuxClick={(e) => {
+                        if (e.button === 1) handleWhatsAppContact();
+                      }}
+                      className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-2 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                      title={isAr ? 'فتح واتساب وتحويل الحالة إلى تم التواصل' : 'Open WhatsApp & mark Contacted'}
+                    >
+                      <MessageSquare className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                  {primaryPhone && (
+                    <button
+                      type="button"
+                      onClick={() => handleCopy('phone', primaryPhone)}
+                      className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 text-slate-500 hover:text-[#0077B6] transition-colors"
+                      title={isAr ? 'نسخ الرقم' : 'Copy phone'}
+                    >
+                      {copiedKey === 'phone' ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Email Block */}
@@ -1197,6 +1273,9 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
                     target="_blank"
                     rel="noreferrer"
                     onClick={handleWhatsAppContact}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) handleWhatsAppContact();
+                    }}
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 min-h-[38px] text-xs font-semibold transition-colors whitespace-nowrap"
                   >
                     <MessageSquare className="h-3.5 w-3.5" />
