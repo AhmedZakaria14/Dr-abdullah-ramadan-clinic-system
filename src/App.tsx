@@ -367,7 +367,9 @@ function LeadFlowAppInner() {
       setProdBusinesses([]);
       setDemoBusinesses([]);
       setActiveBusinessId('');
+      setActiveTab('dashboard');
       setSelectedLeadId(null);
+      setSelectedLeadPreview(null);
     });
     loadSessionAndWorkspaces();
   }, []);
@@ -916,6 +918,12 @@ function LeadFlowAppInner() {
   }) => {
     const prodList = Array.isArray(data?.businesses) ? data.businesses : [];
     const demoList = Array.isArray(data?.demoBusinesses) ? data.demoBusinesses : [];
+    const primaryBiz = prodList[0] || demoList[0];
+    const loggingInAsModerator =
+      primaryBiz?.member_role === 'moderator' || primaryBiz?.account_slot === 'moderator';
+    setSelectedLeadId(null);
+    setSelectedLeadPreview(null);
+    setActiveTab(loggingInAsModerator ? 'leads' : 'dashboard');
     setAuthUser(data.user);
     setCurrentUserId(data.user.id);
     setProdBusinesses(prodList);
@@ -932,7 +940,9 @@ function LeadFlowAppInner() {
     setProdBusinesses([]);
     setDemoBusinesses([]);
     setActiveBusinessId('');
+    setActiveTab('dashboard');
     setSelectedLeadId(null);
+    setSelectedLeadPreview(null);
     setNotifications([]);
     setUnreadCount(0);
     setAnalytics(null);

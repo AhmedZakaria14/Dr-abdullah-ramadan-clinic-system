@@ -47,6 +47,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     setSubmitting(true);
     setErrorMsg(null);
+    setAuthToken(null);
     try {
       const res = await apiRequest<LoginResponse>('/auth/login', {
         method: 'POST',
@@ -56,17 +57,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           password,
         }),
       });
+      if (!res?.token || typeof res.token !== 'string') {
+        throw new Error(isAr ? 'تعذر إنشاء جلسة الدخول — يرجى المحاولة مرة أخرى' : 'Unable to create session token');
+      }
       setAuthToken(res.token);
       onLoginSuccess(res);
     } catch (err: any) {
       const raw = String(err?.message || '');
-      if (raw.toLowerCase().includes('invalid username')) {
+      const lower = raw.toLowerCase();
+      if (lower.includes('invalid username')) {
         setErrorMsg(
           isAr ? 'اسم المستخدم أو كلمة المرور غير صحيحة' : 'Invalid username or password'
         );
-      } else if (raw.toLowerCase().includes('deactivated')) {
+      } else if (lower.includes('deactivated')) {
         setErrorMsg(
           isAr ? 'تم تعطيل هذا الحساب — تواصل مع المدير' : 'This account has been deactivated'
+        );
+      } else if (lower.includes('active workspace access')) {
+        setErrorMsg(
+          isAr ? 'هذا الحساب لا يملك صلاحية نشطة على مساحة العمل — تواصل مع المدير' : 'This account does not have active workspace access'
         );
       } else {
         setErrorMsg(raw || (isAr ? 'تعذر تسجيل الدخول' : 'Sign in failed'));

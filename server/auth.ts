@@ -2,16 +2,27 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SqlDb } from './db.ts';
 
 function loadFirebaseConfig(): { projectId?: string; firestoreDatabaseId?: string } {
+  const candidates = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+  ];
   try {
-    const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(configPath)) {
-      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    }
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    candidates.push(path.resolve(here, '..', 'firebase-applet-config.json'));
   } catch {
-    // Ignore missing or unreadable config
+    // Ignore import.meta.url fallback error
+  }
+  for (const configPath of candidates) {
+    try {
+      if (fs.existsSync(configPath)) {
+        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+    } catch {
+      // Try next candidate
+    }
   }
   return {};
 }
@@ -76,13 +87,17 @@ export interface SessionTokenPayload {
   isOwner: boolean;
   isPlatformSuperAdmin: boolean;
   accountSlot: 'manager' | 'moderator' | 'accountant';
+  role?: Role;
+  iat?: number;
   exp: number;
 }
 
-export function signSessionToken(payload: Omit<SessionTokenPayload, 'exp'>): string {
+export function signSessionToken(payload: Omit<SessionTokenPayload, 'exp' | 'iat'>): string {
+  const now = Date.now();
   const fullPayload: SessionTokenPayload = {
     ...payload,
-    exp: Date.now() + SESSION_TTL_MS,
+    iat: now,
+    exp: now + SESSION_TTL_MS,
   };
   const body = Buffer.from(JSON.stringify(fullPayload), 'utf8').toString('base64url');
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
@@ -107,6 +122,84 @@ export function verifySessionToken(token: string): SessionTokenPayload | null {
   } catch {
     return null;
   }
+}
+
+export function recordAccountRevocation(
+  db: SqlDb,
+  params: { userId?: string | null; username?: string | null; email?: string | null; reason?: string }
+): void {
+  try {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const cleanUserId = params.userId?.trim() || null;
+    const cleanUsername = params.username?.trim().toLowerCase() || null;
+    const cleanEmail = params.email?.trim().toLowerCase() || null;
+    if (!cleanUserId && !cleanUsername && !cleanEmail) return;
+    db.prepare(`
+      INSERT INTO revoked_accounts (id, user_id, username, email, revoked_at_ms, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(crypto.randomUUID(), cleanUserId, cleanUsername, cleanEmail, nowMs, params.reason || 'revoked', nowIso);
+  } catch {
+    // Ignore if table not yet initialized
+  }
+}
+
+export function clearAccountRevocation(
+  db: SqlDb,
+  params: { userId?: string | null; username?: string | null; email?: string | null }
+): void {
+  try {
+    const conditions: string[] = [];
+    const args: string[] = [];
+    if (params.userId?.trim()) {
+      conditions.push('user_id = ?');
+      args.push(params.userId.trim());
+    }
+    if (params.username?.trim()) {
+      conditions.push('LOWER(username) = ?');
+      args.push(params.username.trim().toLowerCase());
+    }
+    if (params.email?.trim()) {
+      conditions.push('LOWER(email) = ?');
+      args.push(params.email.trim().toLowerCase());
+    }
+    if (conditions.length === 0) return;
+    db.prepare(`DELETE FROM revoked_accounts WHERE ${conditions.join(' OR ')}`).run(...args);
+  } catch {
+    // Ignore if table not yet initialized
+  }
+}
+
+function isSessionRevoked(db: SqlDb, session: SessionTokenPayload): boolean {
+  // Always reject legacy removed accountant account tokens
+  if (
+    session.sub === 'clinic-accountant' ||
+    session.username?.trim().toLowerCase() === 'accountant' ||
+    session.accountSlot === 'accountant'
+  ) {
+    return true;
+  }
+  try {
+    const cleanSub = session.sub.trim();
+    const cleanUsername = (session.username || '').trim().toLowerCase();
+    const cleanEmail = (session.email || '').trim().toLowerCase();
+    const row = db
+      .prepare(`
+        SELECT MAX(revoked_at_ms) as revoked_at_ms
+        FROM revoked_accounts
+        WHERE user_id = ?
+           OR (username IS NOT NULL AND LOWER(username) = ?)
+           OR (email IS NOT NULL AND LOWER(email) = ?)
+      `)
+      .get(cleanSub, cleanUsername, cleanEmail) as { revoked_at_ms?: number | null } | undefined;
+    if (row && typeof row.revoked_at_ms === 'number' && row.revoked_at_ms > 0) {
+      const issuedAt = typeof session.iat === 'number' ? session.iat : 0;
+      return row.revoked_at_ms >= issuedAt;
+    }
+  } catch {
+    // Ignore if table does not exist in minimal test DB
+  }
+  return false;
 }
 
 export async function syncSystemAccountsToFirestore(db: SqlDb): Promise<void> {
@@ -370,40 +463,79 @@ export async function resolveUserFromToken(
   // 1. Check signed traditional username/password session token
   const session = verifySessionToken(token);
   if (session) {
+    const isOwnerSession = Boolean(
+      session.isOwner ||
+        session.username?.trim().toLowerCase() === DEFAULT_ADMIN_USERNAME ||
+        session.email?.trim().toLowerCase() === MASTER_OWNER_EMAIL
+    );
+
+    if (!isOwnerSession && isSessionRevoked(db, session)) {
+      throw new Error('Account access has been revoked');
+    }
+
+    const sessionEmail = session.email.trim().toLowerCase();
+    const sessionUsername = (session.username || '').trim().toLowerCase();
+    const resolvedSlot: 'manager' | 'moderator' =
+      isOwnerSession || (session.accountSlot === 'manager' && session.role === 'business_admin')
+        ? 'manager'
+        : 'moderator';
+    const resolvedRole: Role = resolvedSlot === 'manager' ? 'business_admin' : 'moderator';
+
     const dbUser =
       (db.prepare('SELECT * FROM users WHERE id = ?').get(session.sub) as any) ||
-      (db.prepare('SELECT * FROM users WHERE LOWER(username) = ?').get(session.username.toLowerCase()) as any) ||
-      (db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(session.email.toLowerCase()) as any);
+      (sessionUsername
+        ? (db.prepare('SELECT * FROM users WHERE LOWER(username) = ?').get(sessionUsername) as any)
+        : null) ||
+      (db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(sessionEmail) as any);
 
     if (dbUser) {
       const isUserOwner = Boolean(
-        session.isOwner ||
+        isOwnerSession ||
           dbUser.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME ||
           dbUser.email?.toLowerCase() === MASTER_OWNER_EMAIL
       );
-      // Only auto-ensure owner membership; non-owner accounts (e.g. moderators) must keep an active membership in DB
-      const hasMembership = db
-        .prepare("SELECT id FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
-        .get(CLINIC_BIZ_ID, dbUser.id);
-      if (!hasMembership && isUserOwner) {
-        const now = new Date().toISOString();
+      const userEmail = String(dbUser.email || sessionEmail).trim().toLowerCase();
+      const now = new Date().toISOString();
+
+      const existingMembership = db
+        .prepare(
+          `SELECT id, user_id, status, account_slot, role FROM business_memberships
+           WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = ?)`
+        )
+        .get(CLINIC_BIZ_ID, dbUser.id, userEmail) as
+        | { id: string; user_id?: string | null; status: string; account_slot?: string; role?: Role }
+        | undefined;
+
+      if (existingMembership && existingMembership.status === 'inactive' && !isUserOwner) {
+        throw new Error('Account has been deactivated');
+      }
+
+      if (existingMembership && (existingMembership.user_id !== dbUser.id || existingMembership.status === 'invited')) {
+        db.prepare(
+          "UPDATE business_memberships SET user_id = ?, status = 'active', updated_at = ? WHERE id = ?"
+        ).run(dbUser.id, now, existingMembership.id);
+      } else if (!existingMembership) {
         const clinicExists = db.prepare('SELECT id FROM businesses WHERE id = ?').get(CLINIC_BIZ_ID);
         if (clinicExists) {
+          const targetSlot = isUserOwner ? 'manager' : resolvedSlot;
+          const targetRole: Role = isUserOwner ? 'business_admin' : resolvedRole;
           db.prepare(`
             INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'manager', 'business_admin', 'active', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             ON CONFLICT(business_id, invited_email) DO UPDATE SET
               user_id = excluded.user_id,
-              account_slot = 'manager',
+              account_slot = excluded.account_slot,
+              role = excluded.role,
               status = 'active',
-              role = 'business_admin',
               updated_at = excluded.updated_at
           `).run(
             crypto.randomUUID(),
             CLINIC_BIZ_ID,
             dbUser.id,
-            dbUser.email.toLowerCase(),
-            dbUser.full_name,
+            userEmail,
+            dbUser.full_name || session.name || sessionUsername || userEmail.split('@')[0],
+            targetSlot,
+            targetRole,
             now,
             now
           );
@@ -414,52 +546,95 @@ export async function resolveUserFromToken(
         id: dbUser.id,
         firebaseUid: dbUser.firebase_uid || dbUser.id,
         username: dbUser.username || session.username,
-        email: dbUser.email.toLowerCase(),
-        fullName: dbUser.full_name,
+        email: userEmail,
+        fullName: dbUser.full_name || session.name,
         isDemoUser: false,
-        isPlatformSuperAdmin: Boolean(dbUser.is_platform_super_admin || session.isOwner),
-        isOwner: Boolean(session.isOwner || dbUser.username === DEFAULT_ADMIN_USERNAME || dbUser.email.toLowerCase() === MASTER_OWNER_EMAIL),
+        isPlatformSuperAdmin: Boolean(dbUser.is_platform_super_admin || isUserOwner),
+        isOwner: isUserOwner,
       };
     }
 
-    // Only reconstruct primary Manager/Owner if serverless SQLite cold-started; reject deleted accounts (e.g. removed accountant)
-    const isOwnerSession =
-      Boolean(session.isOwner) ||
-      session.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME ||
-      session.email?.toLowerCase() === MASTER_OWNER_EMAIL;
-    if (!isOwnerSession) {
-      throw new Error('Account no longer exists');
+    // Reconstruct valid, non-revoked HMAC-signed session (Owner/Manager OR Moderator) if a serverless/multi-instance SQLite container cold-started.
+    // Preserves session.sub and strictly honors the server-signed role/slot (moderators NEVER escalate to business_admin).
+    const now = new Date().toISOString();
+    const targetId = session.sub;
+    const displayName = session.name || sessionUsername || sessionEmail.split('@')[0];
+    const isSuper = isOwnerSession ? 1 : 0;
+
+    try {
+      db.prepare(`
+        INSERT INTO users (id, firebase_uid, username, email, full_name, default_language, theme, is_platform_super_admin, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'ar', 'light', ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          username = COALESCE(excluded.username, users.username),
+          email = excluded.email,
+          full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
+          updated_at = excluded.updated_at
+      `).run(
+        targetId,
+        `local-${targetId}`,
+        sessionUsername || null,
+        sessionEmail,
+        displayName,
+        isSuper,
+        now,
+        now
+      );
+    } catch {
+      // Fallback if username/email unique constraint raced with another request
+      const raced =
+        (sessionUsername
+          ? (db.prepare('SELECT * FROM users WHERE LOWER(username) = ?').get(sessionUsername) as any)
+          : null) ||
+        (db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(sessionEmail) as any);
+      if (raced) {
+        return {
+          id: raced.id,
+          firebaseUid: raced.firebase_uid || raced.id,
+          username: raced.username || session.username,
+          email: String(raced.email || sessionEmail).toLowerCase(),
+          fullName: raced.full_name || displayName,
+          isDemoUser: false,
+          isPlatformSuperAdmin: Boolean(raced.is_platform_super_admin || isOwnerSession),
+          isOwner: isOwnerSession,
+        };
+      }
     }
 
-    const rebuilt = upsertUserFromAuth(db, {
-      uid: session.sub,
-      username: session.username,
-      email: session.email,
-      name: session.name,
-    });
     const clinicExists = db.prepare('SELECT id FROM businesses WHERE id = ?').get(CLINIC_BIZ_ID);
     if (clinicExists) {
-      const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'manager', 'business_admin', 'active', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
         ON CONFLICT(business_id, invited_email) DO UPDATE SET
           user_id = excluded.user_id,
-          account_slot = 'manager',
+          account_slot = excluded.account_slot,
+          role = excluded.role,
           status = 'active',
-          role = 'business_admin',
           updated_at = excluded.updated_at
       `).run(
         crypto.randomUUID(),
         CLINIC_BIZ_ID,
-        rebuilt.id,
-        rebuilt.email,
-        rebuilt.fullName,
+        targetId,
+        sessionEmail,
+        displayName,
+        resolvedSlot,
+        resolvedRole,
         now,
         now
       );
     }
-    return rebuilt;
+
+    return {
+      id: targetId,
+      firebaseUid: `local-${targetId}`,
+      username: sessionUsername || session.username,
+      email: sessionEmail,
+      fullName: displayName,
+      isDemoUser: false,
+      isPlatformSuperAdmin: isOwnerSession,
+      isOwner: isOwnerSession,
+    };
   }
 
   // 2. Fallback to injected TokenVerifier (used by automated acceptance test mocks)
@@ -545,9 +720,10 @@ export function requireBusinessAccess(db: SqlDb, allowedRoles?: Role[]) {
     const membership = db
       .prepare(
         `SELECT id, business_id, role, status, account_slot FROM business_memberships
-         WHERE business_id = ? AND user_id = ? AND status = 'active'`
+         WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
+         LIMIT 1`
       )
-      .get(businessId, req.authUser.id) as
+      .get(businessId, req.authUser.id, req.authUser.email || '') as
       | { id: string; business_id: string; role: Role; status: string; account_slot?: 'manager' | 'moderator' | 'accountant' }
       | undefined;
 

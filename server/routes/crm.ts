@@ -9,8 +9,10 @@ import {
   MASTER_OWNER_EMAIL,
   Role,
   TokenVerifier,
+  clearAccountRevocation,
   defaultTokenVerifier,
   hashPassword,
+  recordAccountRevocation,
   removeAccountFromFirestore,
   requireBusinessAccess,
   resolveUserFromToken,
@@ -97,7 +99,7 @@ export function createCrmRoutes(
         if (existingMembership.status === 'inactive' && !isOwner) {
           return res.status(403).json({ error: 'This account has been deactivated' });
         }
-        if (existingMembership.status === 'invited' || !existingMembership.user_id) {
+        if (existingMembership.status === 'invited' || existingMembership.user_id !== userRow.id) {
           db.prepare("UPDATE business_memberships SET user_id = ?, status = 'active', updated_at = ? WHERE id = ?").run(
             userRow.id,
             now,
@@ -108,8 +110,12 @@ export function createCrmRoutes(
     }
 
     const membershipRow = db
-      .prepare("SELECT account_slot, role FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
-      .get(CLINIC_WORKSPACE_ID, userRow.id) as
+      .prepare(
+        `SELECT account_slot, role FROM business_memberships
+         WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
+         LIMIT 1`
+      )
+      .get(CLINIC_WORKSPACE_ID, userRow.id, String(userRow.email || '').toLowerCase()) as
       | { account_slot?: 'manager' | 'moderator' | 'accountant'; role?: Role }
       | undefined;
 
@@ -121,15 +127,17 @@ export function createCrmRoutes(
       isOwner || membershipRow?.account_slot === 'manager' || membershipRow?.role === 'business_admin'
         ? 'manager'
         : 'moderator';
+    const accountRole: Role = accountSlot === 'manager' ? 'business_admin' : 'moderator';
 
     const token = signSessionToken({
       sub: userRow.id,
       username: userRow.username || rawUsername,
-      email: userRow.email.toLowerCase(),
+      email: String(userRow.email || '').toLowerCase(),
       name: userRow.full_name,
       isOwner,
       isPlatformSuperAdmin: Boolean(userRow.is_platform_super_admin || isOwner),
       accountSlot,
+      role: accountRole,
     });
 
     const prodBusinesses = db
@@ -137,10 +145,10 @@ export function createCrmRoutes(
         SELECT b.*, bm.role as member_role, bm.account_slot as account_slot
         FROM businesses b
         JOIN business_memberships bm ON bm.business_id = b.id
-        WHERE bm.user_id = ? AND bm.status = 'active' AND (b.is_demo = 0 OR b.id = ?)
+        WHERE (bm.user_id = ? OR LOWER(bm.invited_email) = LOWER(?)) AND bm.status = 'active' AND (b.is_demo = 0 OR b.id = ?)
         ORDER BY b.created_at DESC
       `)
-      .all(userRow.id, CLINIC_WORKSPACE_ID) as any[];
+      .all(userRow.id, String(userRow.email || '').toLowerCase(), CLINIC_WORKSPACE_ID) as any[];
 
     if (isOwner && !prodBusinesses.some((b) => b.id === CLINIC_WORKSPACE_ID)) {
       const clinicBiz = db
@@ -212,10 +220,10 @@ export function createCrmRoutes(
           SELECT b.*, bm.role as member_role, bm.account_slot as account_slot
           FROM businesses b
           JOIN business_memberships bm ON bm.business_id = b.id
-          WHERE bm.user_id = ? AND bm.status = 'active' AND (b.is_demo = 0 OR b.id = ?)
+          WHERE (bm.user_id = ? OR LOWER(bm.invited_email) = LOWER(?)) AND bm.status = 'active' AND (b.is_demo = 0 OR b.id = ?)
           ORDER BY b.created_at DESC
         `)
-        .all(user.id, CLINIC_WORKSPACE_ID) as any[];
+        .all(user.id, String(user.email || '').toLowerCase(), CLINIC_WORKSPACE_ID) as any[];
 
       if (user.isOwner && !prodBusinesses.some((b) => b.id === CLINIC_WORKSPACE_ID)) {
         const clinicBiz = db
@@ -306,8 +314,12 @@ export function createCrmRoutes(
         try {
           const user = await resolveUserFromToken(db, tokenParam, tokenVerifier);
           const member = db
-            .prepare("SELECT id FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
-            .get(businessId, user.id);
+            .prepare(
+              `SELECT id FROM business_memberships
+               WHERE business_id = ? AND (user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
+               LIMIT 1`
+            )
+            .get(businessId, user.id, user.email || '');
           if (!member && !(user.isOwner && businessId === CLINIC_WORKSPACE_ID)) {
             return res.status(403).json({ error: 'Forbidden SSE stream' });
           }
@@ -2003,30 +2015,44 @@ export function createCrmRoutes(
       ) as any;
 
       const cleanPassword = typeof password === 'string' ? password : '';
-      if (!existingUser && cleanUsername && cleanPassword.length < 6) {
+      if (!existingUser && cleanPassword.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters for new accounts' });
       }
       if (cleanPassword && cleanPassword.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
       }
 
-      if (cleanUsername && cleanPassword && !existingUser) {
+      const effectiveEmail = rawEmail || existingUser?.email?.toLowerCase() || normalizedEmail;
+      const derivedUsernameBase = effectiveEmail
+        .split('@')[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, '')
+        .slice(0, 24);
+      let effectiveUsername = cleanUsername || existingUser?.username || derivedUsernameBase;
+      if (!existingUser && !cleanUsername && effectiveUsername) {
+        const collision = db.prepare('SELECT id FROM users WHERE LOWER(username) = ?').get(effectiveUsername);
+        if (collision) {
+          effectiveUsername = `${effectiveUsername}_${crypto.randomBytes(2).toString('hex')}`;
+        }
+      }
+
+      if (cleanPassword && !existingUser) {
         const newUserId = crypto.randomUUID();
-        const label = displayName?.trim() || cleanUsername;
+        const label = displayName?.trim() || effectiveUsername || effectiveEmail.split('@')[0];
         db.prepare(`
           INSERT INTO users (id, firebase_uid, username, password_hash, email, full_name, default_language, theme, is_platform_super_admin, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, 'ar', 'light', 0, ?, ?)
         `).run(
           newUserId,
           `local-${newUserId}`,
-          cleanUsername,
+          effectiveUsername || null,
           hashPassword(cleanPassword),
-          normalizedEmail,
+          effectiveEmail,
           label,
           now,
           now
         );
-        existingUser = { id: newUserId, full_name: label, username: cleanUsername, email: normalizedEmail };
+        existingUser = { id: newUserId, full_name: label, username: effectiveUsername, email: effectiveEmail };
       } else if (existingUser && (cleanUsername || cleanPassword || displayName)) {
         db.prepare(`
           UPDATE users
@@ -2044,9 +2070,16 @@ export function createCrmRoutes(
         );
       }
 
-      const isTargetOwner = normalizedEmail === MASTER_OWNER_EMAIL || cleanUsername === DEFAULT_ADMIN_USERNAME;
+      const isTargetOwner = effectiveEmail === MASTER_OWNER_EMAIL || effectiveUsername === DEFAULT_ADMIN_USERNAME;
       const finalSlot: 'manager' | 'moderator' = isTargetOwner ? 'manager' : resolvedSlot;
       const finalRole: Role = isTargetOwner ? 'business_admin' : resolvedRole;
+
+      // Clear any previous revocation for this recreated or re-enabled account
+      clearAccountRevocation(db, {
+        userId: existingUser?.id,
+        username: effectiveUsername,
+        email: effectiveEmail,
+      });
 
       const id = crypto.randomUUID();
       db.prepare(`
@@ -2063,8 +2096,8 @@ export function createCrmRoutes(
         id,
         businessId,
         existingUser?.id || null,
-        normalizedEmail,
-        displayName?.trim() || existingUser?.full_name || cleanUsername || normalizedEmail.split('@')[0],
+        effectiveEmail,
+        displayName?.trim() || existingUser?.full_name || effectiveUsername || effectiveEmail.split('@')[0],
         finalSlot,
         finalRole,
         existingUser ? 'active' : 'invited',
@@ -2078,7 +2111,7 @@ export function createCrmRoutes(
         action: finalSlot === 'moderator' ? 'moderator_account_saved' : 'manager_account_saved',
         entityType: 'membership',
         entityId: id,
-        details: { email: normalizedEmail, username: cleanUsername || null, accountSlot: finalSlot, role: finalRole },
+        details: { email: effectiveEmail, username: effectiveUsername || null, accountSlot: finalSlot, role: finalRole },
         ipAddress: req.ip,
       });
 
@@ -2092,7 +2125,7 @@ export function createCrmRoutes(
           LEFT JOIN users u ON u.id = bm.user_id
           WHERE bm.business_id = ? AND LOWER(bm.invited_email) = ?
         `)
-        .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId, normalizedEmail);
+        .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId, effectiveEmail);
       res.status(201).json({ member });
     }
   );
@@ -2186,6 +2219,21 @@ export function createCrmRoutes(
         businessId
       );
 
+      if (!isTargetOwner && status === 'inactive') {
+        recordAccountRevocation(db, {
+          userId: existingUser?.id || existingMember.user_id,
+          username: existingUser?.username,
+          email: normalizedNewEmail || existingMember.invited_email,
+          reason: 'deactivated',
+        });
+      } else if (status === 'active') {
+        clearAccountRevocation(db, {
+          userId: existingUser?.id || existingMember.user_id,
+          username: existingUser?.username,
+          email: normalizedNewEmail || existingMember.invited_email,
+        });
+      }
+
       writeAuditLog(db, {
         businessId,
         actorUserId: req.authUser?.id,
@@ -2247,6 +2295,13 @@ export function createCrmRoutes(
           db.prepare('DELETE FROM users WHERE id = ?').run(existingUser.id);
         }
       }
+
+      recordAccountRevocation(db, {
+        userId: existingUser?.id || existingMember.user_id,
+        username: existingUser?.username,
+        email: existingMember.invited_email,
+        reason: 'deleted',
+      });
 
       writeAuditLog(db, {
         businessId,

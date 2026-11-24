@@ -54,21 +54,34 @@ class SqlJsCompatDb implements SqlDb {
     }
   }
 
-  private schedulePersist() {
+  private writeToDiskNow() {
     if (this.filePath === ':memory:') return;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const exported = this.rawDb.export();
+      fs.writeFileSync(this.filePath, Buffer.from(exported));
+    } catch {
+      // Ignore non-writable filesystem errors in serverless ephemeral containers
+    }
+  }
+
+  private schedulePersist(immediate = false) {
+    if (this.filePath === ':memory:') return;
+    if (immediate) {
+      this.writeToDiskNow();
+      return;
+    }
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      try {
-        const dir = path.dirname(this.filePath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        const exported = this.rawDb.export();
-        fs.writeFileSync(this.filePath, Buffer.from(exported));
-      } catch {
-        // Ignore non-writable filesystem errors in serverless ephemeral containers
-      }
+      this.writeToDiskNow();
     }, 25);
     if (typeof (this.persistTimer as any).unref === 'function') {
       (this.persistTimer as any).unref();
@@ -84,7 +97,8 @@ class SqlJsCompatDb implements SqlDb {
 
   prepare(sql: string): SqlStatement {
     const rawDb = this.rawDb;
-    const schedulePersist = () => this.schedulePersist();
+    const isCriticalAuthWrite = /\b(users|business_memberships|revoked_accounts)\b/i.test(sql);
+    const schedulePersist = () => this.schedulePersist(isCriticalAuthWrite);
 
     return {
       run(...params: unknown[]): SqlRunResult {
@@ -577,6 +591,21 @@ function initSchema(db: SqlDb) {
   }
 
   normalizeDeterministicIds(db);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS revoked_accounts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      username TEXT,
+      email TEXT,
+      revoked_at_ms INTEGER NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_revoked_accounts_user_id ON revoked_accounts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_revoked_accounts_username ON revoked_accounts(username);
+    CREATE INDEX IF NOT EXISTS idx_revoked_accounts_email ON revoked_accounts(email);
+  `);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS known_sheet_leads (

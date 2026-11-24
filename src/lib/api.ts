@@ -47,9 +47,10 @@ export async function apiRequest<T = any>(
     headers.set('Content-Type', 'application/json');
   }
 
-  const token = getAuthToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+  const isLoginEndpoint = path.startsWith('/auth/login');
+  const sentToken = isLoginEndpoint ? null : getAuthToken();
+  if (sentToken) {
+    headers.set('Authorization', `Bearer ${sentToken}`);
   }
 
   const res = await fetch(`/api${path}`, {
@@ -64,7 +65,14 @@ export async function apiRequest<T = any>(
       const errData = await res.json().catch(() => ({}));
       message = errData.error || message;
     }
-    if (res.status === 401 && !options.skipAuthRedirect && !path.startsWith('/auth/login')) {
+    // Only invalidate session if this 401 belongs to the CURRENT active token (avoid race when switching accounts)
+    if (
+      res.status === 401 &&
+      !options.skipAuthRedirect &&
+      !isLoginEndpoint &&
+      sentToken &&
+      sentToken === getAuthToken()
+    ) {
       setAuthToken(null);
       unauthorizedHandler?.();
     }
