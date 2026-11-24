@@ -75,7 +75,7 @@ export interface SessionTokenPayload {
   name: string;
   isOwner: boolean;
   isPlatformSuperAdmin: boolean;
-  accountSlot: 'manager' | 'accountant';
+  accountSlot: 'manager' | 'moderator' | 'accountant';
   exp: number;
 }
 
@@ -134,27 +134,76 @@ export async function syncSystemAccountsToFirestore(db: SqlDb): Promise<void> {
 
     const nowIso = new Date().toISOString();
     for (const r of rows) {
+      const normalizedSlot = r.account_slot === 'manager' ? 'manager' : 'moderator';
+      const firestoreRole = normalizedSlot === 'manager' ? 'full_access' : 'moderator';
+      const normalizedEmail = String(r.email || '').trim().toLowerCase();
+      const isRowOwner = Boolean(
+        r.is_platform_super_admin ||
+          r.username === DEFAULT_ADMIN_USERNAME ||
+          normalizedEmail === MASTER_OWNER_EMAIL
+      );
       await adminFs.collection('users').doc(r.id).set(
         {
           uid: r.id,
-          username: r.username || r.email.split('@')[0],
-          email: r.email,
+          username: r.username || normalizedEmail.split('@')[0],
+          email: normalizedEmail,
           fullName: r.full_name,
-          accountType: r.account_slot === 'manager' ? 'manager' : 'accountant',
-          isOwner: Boolean(r.is_platform_super_admin || r.username === DEFAULT_ADMIN_USERNAME),
+          accountType: normalizedSlot,
+          isOwner: isRowOwner,
           defaultLanguage: 'ar',
           theme: 'light',
           updatedAt: nowIso,
         },
         { merge: true }
       );
+      if (normalizedEmail && normalizedEmail.includes('@')) {
+        await adminFs.collection('authorized_emails').doc(normalizedEmail).set(
+          {
+            email: normalizedEmail,
+            displayName: r.full_name,
+            accountType: normalizedSlot,
+            role: firestoreRole,
+            isOwner: isRowOwner,
+            status: r.status === 'inactive' ? 'inactive' : 'active',
+            grantedBy: MASTER_OWNER_EMAIL,
+            updatedAt: nowIso,
+          },
+          { merge: true }
+        );
+      }
+    }
+    await adminFs.collection('users').doc('clinic-accountant').delete().catch(() => {});
+    await adminFs.collection('authorized_emails').doc('accountant@drabdullahramadan.local').delete().catch(() => {});
+  } catch {
+    // Graceful skip when Firestore Admin credentials are unavailable
+  }
+}
+
+export async function removeAccountFromFirestore(userId?: string | null, email?: string | null): Promise<void> {
+  const projectId = firebaseConfig?.projectId;
+  const dbId = firebaseConfig?.firestoreDatabaseId;
+  if (!projectId || !dbId) return;
+  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.K_SERVICE) return;
+
+  try {
+    const app = await ensureFirebaseAdminApp();
+    if (!app) return;
+    const fbFirestorePkg = 'firebase-admin/firestore';
+    const { getFirestore: getAdminFirestore } = await import(/* @vite-ignore */ fbFirestorePkg);
+    const adminFs = getAdminFirestore(app, dbId);
+    if (userId && userId !== 'clinic-owner-manager') {
+      await adminFs.collection('users').doc(userId).delete().catch(() => {});
+    }
+    const cleanEmail = email?.trim().toLowerCase();
+    if (cleanEmail && cleanEmail !== MASTER_OWNER_EMAIL) {
+      await adminFs.collection('authorized_emails').doc(cleanEmail).delete().catch(() => {});
     }
   } catch {
     // Graceful skip when Firestore Admin credentials are unavailable
   }
 }
 
-export type Role = 'super_admin' | 'business_admin' | 'manager' | 'employee';
+export type Role = 'super_admin' | 'business_admin' | 'manager' | 'moderator' | 'employee';
 
 export interface AuthUser {
   id: string;
@@ -174,7 +223,7 @@ export interface AuthRequest extends Request {
     business_id: string;
     role: Role;
     status: string;
-    account_slot?: 'manager' | 'accountant';
+    account_slot?: 'manager' | 'moderator' | 'accountant';
   };
   rawBody?: Buffer;
 }
@@ -327,19 +376,25 @@ export async function resolveUserFromToken(
       (db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(session.email.toLowerCase()) as any);
 
     if (dbUser) {
-      // Ensure active membership on clinic workspace for valid seeded/session accounts
+      const isUserOwner = Boolean(
+        session.isOwner ||
+          dbUser.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME ||
+          dbUser.email?.toLowerCase() === MASTER_OWNER_EMAIL
+      );
+      // Only auto-ensure owner membership; non-owner accounts (e.g. moderators) must keep an active membership in DB
       const hasMembership = db
         .prepare("SELECT id FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
         .get(CLINIC_BIZ_ID, dbUser.id);
-      if (!hasMembership && (session.isOwner || dbUser.username === DEFAULT_ADMIN_USERNAME || session.accountSlot)) {
+      if (!hasMembership && isUserOwner) {
         const now = new Date().toISOString();
         const clinicExists = db.prepare('SELECT id FROM businesses WHERE id = ?').get(CLINIC_BIZ_ID);
         if (clinicExists) {
           db.prepare(`
             INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'business_admin', 'active', ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'manager', 'business_admin', 'active', ?, ?)
             ON CONFLICT(business_id, invited_email) DO UPDATE SET
               user_id = excluded.user_id,
+              account_slot = 'manager',
               status = 'active',
               role = 'business_admin',
               updated_at = excluded.updated_at
@@ -349,7 +404,6 @@ export async function resolveUserFromToken(
             dbUser.id,
             dbUser.email.toLowerCase(),
             dbUser.full_name,
-            session.accountSlot || (session.isOwner ? 'manager' : 'accountant'),
             now,
             now
           );
@@ -368,7 +422,15 @@ export async function resolveUserFromToken(
       };
     }
 
-    // Reconstruct user seamlessly if serverless SQLite cold-started after login
+    // Only reconstruct primary Manager/Owner if serverless SQLite cold-started; reject deleted accounts (e.g. removed accountant)
+    const isOwnerSession =
+      Boolean(session.isOwner) ||
+      session.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME ||
+      session.email?.toLowerCase() === MASTER_OWNER_EMAIL;
+    if (!isOwnerSession) {
+      throw new Error('Account no longer exists');
+    }
+
     const rebuilt = upsertUserFromAuth(db, {
       uid: session.sub,
       username: session.username,
@@ -380,9 +442,10 @@ export async function resolveUserFromToken(
       const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'business_admin', 'active', ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'manager', 'business_admin', 'active', ?, ?)
         ON CONFLICT(business_id, invited_email) DO UPDATE SET
           user_id = excluded.user_id,
+          account_slot = 'manager',
           status = 'active',
           role = 'business_admin',
           updated_at = excluded.updated_at
@@ -392,7 +455,6 @@ export async function resolveUserFromToken(
         rebuilt.id,
         rebuilt.email,
         rebuilt.fullName,
-        session.accountSlot || 'accountant',
         now,
         now
       );
@@ -486,7 +548,7 @@ export function requireBusinessAccess(db: SqlDb, allowedRoles?: Role[]) {
          WHERE business_id = ? AND user_id = ? AND status = 'active'`
       )
       .get(businessId, req.authUser.id) as
-      | { id: string; business_id: string; role: Role; status: string; account_slot?: 'manager' | 'accountant' }
+      | { id: string; business_id: string; role: Role; status: string; account_slot?: 'manager' | 'moderator' | 'accountant' }
       | undefined;
 
     if (!membership) {

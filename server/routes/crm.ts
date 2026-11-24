@@ -11,9 +11,11 @@ import {
   TokenVerifier,
   defaultTokenVerifier,
   hashPassword,
+  removeAccountFromFirestore,
   requireBusinessAccess,
   resolveUserFromToken,
   signSessionToken,
+  syncSystemAccountsToFirestore,
   verifyPassword,
   writeAuditLog,
 } from '../auth.ts';
@@ -106,11 +108,19 @@ export function createCrmRoutes(
     }
 
     const membershipRow = db
-      .prepare("SELECT account_slot FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
-      .get(CLINIC_WORKSPACE_ID, userRow.id) as { account_slot?: 'manager' | 'accountant' } | undefined;
+      .prepare("SELECT account_slot, role FROM business_memberships WHERE business_id = ? AND user_id = ? AND status = 'active'")
+      .get(CLINIC_WORKSPACE_ID, userRow.id) as
+      | { account_slot?: 'manager' | 'moderator' | 'accountant'; role?: Role }
+      | undefined;
 
-    const accountSlot: 'manager' | 'accountant' =
-      membershipRow?.account_slot === 'manager' || isOwner ? 'manager' : 'accountant';
+    if (!isOwner && !membershipRow) {
+      return res.status(403).json({ error: 'This account does not have active workspace access' });
+    }
+
+    const accountSlot: 'manager' | 'moderator' | 'accountant' =
+      isOwner || membershipRow?.account_slot === 'manager' || membershipRow?.role === 'business_admin'
+        ? 'manager'
+        : 'moderator';
 
     const token = signSessionToken({
       sub: userRow.id,
@@ -503,6 +513,18 @@ export function createCrmRoutes(
   router.post('/businesses', authMiddleware, (req: AuthRequest, res) => {
     if (req.authUser?.isDemoUser) {
       return res.status(403).json({ error: 'Authentication required to create a production business workspace.' });
+    }
+
+    if (!req.authUser?.isOwner && !req.authUser?.isPlatformSuperAdmin) {
+      const existingMemberships = db
+        .prepare("SELECT role FROM business_memberships WHERE user_id = ? AND status = 'active'")
+        .all(req.authUser!.id) as Array<{ role: Role }>;
+      const hasAdminMembership = existingMemberships.some(
+        (m) => m.role === 'business_admin' || m.role === 'super_admin'
+      );
+      if (existingMemberships.length > 0 && !hasAdminMembership) {
+        return res.status(403).json({ error: 'Forbidden: Only managers can create workspaces' });
+      }
     }
 
     const { name, industry, phone, email, website, timezone, defaultCountryCode } = req.body || {};
@@ -927,7 +949,7 @@ export function createCrmRoutes(
   router.post(
     '/businesses/:businessId/leads/bulk',
     authMiddleware,
-    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager']),
+    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager', 'moderator']),
     (req: AuthRequest, res) => {
       const { businessId } = req.params;
       const { leadIds, action, statusId, assignedToUserId } = req.body || {};
@@ -1132,7 +1154,7 @@ export function createCrmRoutes(
         FROM lead_notes n
         LEFT JOIN users u ON u.id = n.author_user_id
         WHERE n.lead_id = ? AND n.business_id = ?
-        ORDER BY n.created_at DESC
+        ORDER BY COALESCE(n.is_pinned, 0) DESC, n.created_at DESC
       `)
       .all(canonicalLeadId, businessId);
 
@@ -1461,7 +1483,7 @@ export function createCrmRoutes(
   router.post(
     '/businesses/:businessId/leads/:leadId/assign',
     authMiddleware,
-    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager']),
+    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager', 'moderator']),
     (req: AuthRequest, res) => {
       const { businessId, leadId } = req.params;
       const { assignedToUserId } = req.body || {};
@@ -1525,11 +1547,29 @@ export function createCrmRoutes(
     }
   );
 
-  // Add Note to Lead
+  // Add Rich Note to Lead
   router.post('/businesses/:businessId/leads/:leadId/notes', authMiddleware, requireBusinessAccess(db), (req: AuthRequest, res) => {
     const { businessId, leadId } = req.params;
-    const { content } = req.body || {};
-    if (!content || !content.trim()) return res.status(400).json({ error: 'Note content is required' });
+    const { content, title, category, isPinned } = req.body || {};
+    if (typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'Note content is required' });
+    }
+    const cleanContent = content.trim();
+    if (cleanContent.length > 20_000) {
+      return res.status(400).json({ error: 'Note content exceeds maximum length (20,000 characters)' });
+    }
+
+    const ALLOWED_CATEGORIES: Record<string, { ar: string; en: string }> = {
+      conversation: { ar: 'محادثة ومتابعة', en: 'Ongoing Conversation' },
+      medical: { ar: 'ملاحظة طبية', en: 'Medical Observation' },
+      treatment: { ar: 'تحديث الخطة العلاجية', en: 'Treatment Update' },
+      general: { ar: 'ملاحظة عامة', en: 'General Note' },
+    };
+    const safeCategory =
+      typeof category === 'string' && ALLOWED_CATEGORIES[category] ? category : 'conversation';
+    const safeTitle =
+      typeof title === 'string' && title.trim() ? title.trim().slice(0, 160) : null;
+    const safePinned = isPinned === true || isPinned === 1 ? 1 : 0;
 
     const lead = resolveLeadRecord(db, businessId, leadId, {
       leadCode: req.body?.leadCode,
@@ -1541,23 +1581,42 @@ export function createCrmRoutes(
       return res.status(403).json({ error: 'Forbidden' });
     }
 
+    const plainPreview = cleanContent
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/^>\s+/gm, '')
+      .replace(/^\s*[-*+]\s+\[[ xX]\]\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1')
+      .replace(/(\*\*|__|~~|\*|`)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
     const canonicalLeadId = lead.id;
     const validActorId = resolveValidUserId(db, req.authUser?.id);
     const now = new Date().toISOString();
     const noteId = crypto.randomUUID();
-    db.prepare('INSERT INTO lead_notes (id, business_id, lead_id, author_user_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+
+    db.prepare(
+      'INSERT INTO lead_notes (id, business_id, lead_id, author_user_id, title, category, content, is_pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
       noteId,
       businessId,
       canonicalLeadId,
       validActorId,
-      content.trim(),
+      safeTitle,
+      safeCategory,
+      cleanContent,
+      safePinned,
+      now,
       now
     );
 
+    const summaryText = safeTitle ? `${safeTitle}: ${plainPreview}` : plainPreview;
     db.prepare(
       'UPDATE leads SET notes_summary = ?, last_contact_at = ?, is_read = 1, read_at = COALESCE(read_at, ?), read_by_user_id = COALESCE(read_by_user_id, ?), updated_at = ? WHERE id = ?'
     ).run(
-      content.trim().slice(0, 240),
+      summaryText.slice(0, 240),
       now,
       now,
       validActorId,
@@ -1565,26 +1624,166 @@ export function createCrmRoutes(
       canonicalLeadId
     );
 
+    const catLabel = ALLOWED_CATEGORIES[safeCategory];
     db.prepare(`
       INSERT INTO lead_activities (id, business_id, lead_id, actor_user_id, activity_type, description_ar, description_en, metadata_json, created_at)
-      VALUES (?, ?, ?, ?, 'note_added', 'تمت إضافة ملاحظة جديدة', 'Internal note added', '{}', ?)
-    `).run(crypto.randomUUID(), businessId, canonicalLeadId, validActorId, now);
+      VALUES (?, ?, ?, ?, 'note_added', ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      businessId,
+      canonicalLeadId,
+      validActorId,
+      `تمت إضافة ${catLabel.ar}${safeTitle ? `: ${safeTitle}` : ''}`,
+      `Added ${catLabel.en}${safeTitle ? `: ${safeTitle}` : ''}`,
+      JSON.stringify({ noteId, category: safeCategory }),
+      now
+    );
 
     createAndBroadcastNotification(db, {
       businessId,
       userId: lead.assigned_to_user_id || null,
       type: 'note_added',
-      titleAr: `ملاحظة جديدة: ${lead.full_name}`,
-      titleEn: `New Note: ${lead.full_name}`,
-      messageAr: `${lead.lead_code}: ${content.trim().slice(0, 80)}`,
-      messageEn: `${lead.lead_code}: ${content.trim().slice(0, 80)}`,
+      titleAr: `${catLabel.ar}: ${lead.full_name}`,
+      titleEn: `${catLabel.en}: ${lead.full_name}`,
+      messageAr: `${lead.lead_code}: ${summaryText.slice(0, 80)}`,
+      messageEn: `${lead.lead_code}: ${summaryText.slice(0, 80)}`,
       linkPath: `/leads/${canonicalLeadId}`,
       leadId: canonicalLeadId,
       createdAt: now,
     });
     broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
 
-    res.status(201).json({ note: db.prepare('SELECT * FROM lead_notes WHERE id = ?').get(noteId) });
+    const createdNote = db
+      .prepare(`
+        SELECT n.*, u.full_name as author_name
+        FROM lead_notes n
+        LEFT JOIN users u ON u.id = n.author_user_id
+        WHERE n.id = ?
+      `)
+      .get(noteId);
+
+    res.status(201).json({ note: createdNote });
+  });
+
+  // Update Rich Note (content, title, category, or pin state)
+  router.patch('/businesses/:businessId/leads/:leadId/notes/:noteId', authMiddleware, requireBusinessAccess(db), (req: AuthRequest, res) => {
+    const { businessId, leadId, noteId } = req.params;
+    const lead = resolveLeadRecord(db, businessId, leadId, {
+      leadCode: req.body?.leadCode,
+      externalRowId: req.body?.externalRowId,
+      phone: req.body?.phone,
+    });
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (req.membership?.role === 'employee' && lead.assigned_to_user_id !== req.authUser!.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const canonicalLeadId = lead.id;
+    const existingNote = db
+      .prepare('SELECT * FROM lead_notes WHERE id = ? AND lead_id = ? AND business_id = ?')
+      .get(noteId, canonicalLeadId, businessId) as any;
+    if (!existingNote) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const isManager = req.membership?.role !== 'employee';
+    const isAuthor = existingNote.author_user_id && existingNote.author_user_id === req.authUser?.id;
+    if (!isManager && !isAuthor) {
+      return res.status(403).json({ error: 'Forbidden: Only the note author or a manager can edit this note' });
+    }
+
+    const ALLOWED_CATEGORIES = new Set(['conversation', 'medical', 'treatment', 'general']);
+    const { content, title, category, isPinned } = req.body || {};
+
+    let nextContent: string = existingNote.content;
+    if (content !== undefined) {
+      if (typeof content !== 'string' || !content.trim()) {
+        return res.status(400).json({ error: 'Note content cannot be empty' });
+      }
+      if (content.trim().length > 20_000) {
+        return res.status(400).json({ error: 'Note content exceeds maximum length (20,000 characters)' });
+      }
+      nextContent = content.trim();
+    }
+
+    let nextTitle: string | null = existingNote.title ?? null;
+    if (title !== undefined) {
+      nextTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 160) : null;
+    }
+
+    let nextCategory: string = existingNote.category || 'conversation';
+    if (category !== undefined) {
+      if (typeof category !== 'string' || !ALLOWED_CATEGORIES.has(category)) {
+        return res.status(400).json({ error: 'Invalid note category' });
+      }
+      nextCategory = category;
+    }
+
+    const nextPinned: number =
+      isPinned !== undefined ? (isPinned === true || isPinned === 1 ? 1 : 0) : existingNote.is_pinned ? 1 : 0;
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE lead_notes
+      SET title = ?, category = ?, content = ?, is_pinned = ?, updated_at = ?
+      WHERE id = ? AND lead_id = ? AND business_id = ?
+    `).run(nextTitle, nextCategory, nextContent, nextPinned, now, noteId, canonicalLeadId, businessId);
+
+    const updatedNote = db
+      .prepare(`
+        SELECT n.*, u.full_name as author_name
+        FROM lead_notes n
+        LEFT JOIN users u ON u.id = n.author_user_id
+        WHERE n.id = ?
+      `)
+      .get(noteId);
+
+    broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
+    res.json({ note: updatedNote });
+  });
+
+  // Delete Rich Note
+  router.delete('/businesses/:businessId/leads/:leadId/notes/:noteId', authMiddleware, requireBusinessAccess(db), (req: AuthRequest, res) => {
+    const { businessId, leadId, noteId } = req.params;
+    const lead = resolveLeadRecord(db, businessId, leadId, {
+      leadCode: typeof req.query.leadCode === 'string' ? req.query.leadCode : null,
+      externalRowId: typeof req.query.externalRowId === 'string' ? req.query.externalRowId : null,
+      phone: typeof req.query.phone === 'string' ? req.query.phone : null,
+    });
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (req.membership?.role === 'employee' && lead.assigned_to_user_id !== req.authUser!.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const canonicalLeadId = lead.id;
+    const existingNote = db
+      .prepare('SELECT * FROM lead_notes WHERE id = ? AND lead_id = ? AND business_id = ?')
+      .get(noteId, canonicalLeadId, businessId) as any;
+    if (!existingNote) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const isManager = req.membership?.role !== 'employee';
+    const isAuthor = existingNote.author_user_id && existingNote.author_user_id === req.authUser?.id;
+    if (!isManager && !isAuthor) {
+      return res.status(403).json({ error: 'Forbidden: Only the note author or a manager can delete this note' });
+    }
+
+    db.prepare('DELETE FROM lead_notes WHERE id = ? AND lead_id = ? AND business_id = ?').run(
+      noteId,
+      canonicalLeadId,
+      businessId
+    );
+
+    const validActorId = resolveValidUserId(db, req.authUser?.id);
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO lead_activities (id, business_id, lead_id, actor_user_id, activity_type, description_ar, description_en, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, 'note_deleted', 'تم حذف ملاحظة من سجل المريض', 'Patient note deleted', ?, ?)
+    `).run(crypto.randomUUID(), businessId, canonicalLeadId, validActorId, JSON.stringify({ noteId }), now);
+
+    broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId });
+    res.json({ deleted: true, id: noteId });
   });
 
   // Follow-up Tasks
@@ -1768,23 +1967,24 @@ export function createCrmRoutes(
     (req: AuthRequest, res) => {
       const { businessId } = req.params;
       const { email, username, password, displayName, role, accountSlot } = req.body || {};
-      const validSlots = ['manager', 'accountant'];
-      const validRoles: Role[] = ['business_admin', 'manager', 'employee'];
-      const resolvedSlot: 'manager' | 'accountant' = validSlots.includes(accountSlot)
+      const validSlots = ['manager', 'moderator'];
+      const resolvedSlot: 'manager' | 'moderator' = validSlots.includes(accountSlot)
         ? accountSlot
-        : role === 'manager'
+        : role === 'business_admin'
           ? 'manager'
-          : 'accountant';
-      const resolvedRole: Role = validSlots.includes(accountSlot)
-        ? 'business_admin'
-        : validRoles.includes(role)
-          ? role
-          : 'business_admin';
+          : 'moderator';
+      // Strictly enforce role boundaries on the server: moderators NEVER receive business_admin
+      const resolvedRole: Role = resolvedSlot === 'manager' ? 'business_admin' : 'moderator';
 
       const cleanUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
       const rawEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
       if (!rawEmail && !cleanUsername) {
         return res.status(400).json({ error: 'Username or valid email is required' });
+      }
+      if (cleanUsername && !/^[a-z0-9._-]{3,32}$/.test(cleanUsername)) {
+        return res.status(400).json({
+          error: 'Username must be 3-32 characters using English letters, numbers, dots, dashes, or underscores',
+        });
       }
       if (rawEmail && !rawEmail.includes('@')) {
         return res.status(400).json({ error: 'Valid email is required' });
@@ -1803,6 +2003,13 @@ export function createCrmRoutes(
       ) as any;
 
       const cleanPassword = typeof password === 'string' ? password : '';
+      if (!existingUser && cleanUsername && cleanPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters for new accounts' });
+      }
+      if (cleanPassword && cleanPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      }
+
       if (cleanUsername && cleanPassword && !existingUser) {
         const newUserId = crypto.randomUUID();
         const label = displayName?.trim() || cleanUsername;
@@ -1820,7 +2027,7 @@ export function createCrmRoutes(
           now
         );
         existingUser = { id: newUserId, full_name: label, username: cleanUsername, email: normalizedEmail };
-      } else if (existingUser && (cleanUsername || cleanPassword)) {
+      } else if (existingUser && (cleanUsername || cleanPassword || displayName)) {
         db.prepare(`
           UPDATE users
           SET username = COALESCE(NULLIF(?, ''), username),
@@ -1836,6 +2043,10 @@ export function createCrmRoutes(
           existingUser.id
         );
       }
+
+      const isTargetOwner = normalizedEmail === MASTER_OWNER_EMAIL || cleanUsername === DEFAULT_ADMIN_USERNAME;
+      const finalSlot: 'manager' | 'moderator' = isTargetOwner ? 'manager' : resolvedSlot;
+      const finalRole: Role = isTargetOwner ? 'business_admin' : resolvedRole;
 
       const id = crypto.randomUUID();
       db.prepare(`
@@ -1854,8 +2065,8 @@ export function createCrmRoutes(
         existingUser?.id || null,
         normalizedEmail,
         displayName?.trim() || existingUser?.full_name || cleanUsername || normalizedEmail.split('@')[0],
-        normalizedEmail === MASTER_OWNER_EMAIL || cleanUsername === DEFAULT_ADMIN_USERNAME ? 'manager' : resolvedSlot,
-        normalizedEmail === MASTER_OWNER_EMAIL || cleanUsername === DEFAULT_ADMIN_USERNAME ? 'business_admin' : resolvedRole,
+        finalSlot,
+        finalRole,
         existingUser ? 'active' : 'invited',
         now,
         now
@@ -1864,12 +2075,14 @@ export function createCrmRoutes(
       writeAuditLog(db, {
         businessId,
         actorUserId: req.authUser?.id,
-        action: 'full_access_granted',
+        action: finalSlot === 'moderator' ? 'moderator_account_saved' : 'manager_account_saved',
         entityType: 'membership',
         entityId: id,
-        details: { email: normalizedEmail, username: cleanUsername || null, accountSlot: resolvedSlot, role: resolvedRole },
+        details: { email: normalizedEmail, username: cleanUsername || null, accountSlot: finalSlot, role: finalRole },
         ipAddress: req.ip,
       });
+
+      void syncSystemAccountsToFirestore(db);
 
       const member = db
         .prepare(`
@@ -1903,13 +2116,20 @@ export function createCrmRoutes(
       const isTargetOwner =
         existingMember.invited_email?.toLowerCase() === MASTER_OWNER_EMAIL ||
         existingUser?.username?.toLowerCase() === DEFAULT_ADMIN_USERNAME;
-      if (isTargetOwner && (!req.authUser?.isOwner || status === 'inactive')) {
+      if (isTargetOwner && (!req.authUser?.isOwner || status === 'inactive' || accountSlot === 'moderator')) {
         return res.status(403).json({ error: 'Master Owner account cannot be deactivated or downgraded' });
+      }
+
+      if (password && (typeof password !== 'string' || password.length < 6)) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
       }
 
       const now = new Date().toISOString();
       if (existingUser && (password || (username && !isTargetOwner) || displayName)) {
         const cleanNewUsername = typeof username === 'string' && !isTargetOwner ? username.trim().toLowerCase() : '';
+        if (cleanNewUsername && !/^[a-z0-9._-]{3,32}$/.test(cleanNewUsername)) {
+          return res.status(400).json({ error: 'Invalid username format' });
+        }
         const cleanPass = typeof password === 'string' && password.length >= 6 ? hashPassword(password) : null;
         db.prepare(`
           UPDATE users
@@ -1927,6 +2147,22 @@ export function createCrmRoutes(
         ? (db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(normalizedNewEmail) as any)
         : null;
 
+      const validSlots = ['manager', 'moderator'];
+      const nextSlot = isTargetOwner
+        ? 'manager'
+        : validSlots.includes(accountSlot)
+          ? (accountSlot as 'manager' | 'moderator')
+          : null;
+      const nextRole: Role | null = isTargetOwner
+        ? 'business_admin'
+        : nextSlot === 'moderator'
+          ? 'moderator'
+          : nextSlot === 'manager'
+            ? 'business_admin'
+            : role && ['business_admin', 'manager', 'moderator', 'employee'].includes(role)
+              ? (role as Role)
+              : null;
+
       db.prepare(`
         UPDATE business_memberships
         SET role = COALESCE(?, role),
@@ -1938,8 +2174,8 @@ export function createCrmRoutes(
             updated_at = ?
         WHERE id = ? AND business_id = ?
       `).run(
-        isTargetOwner ? 'business_admin' : role || null,
-        isTargetOwner ? 'manager' : accountSlot || null,
+        nextRole,
+        nextSlot,
         displayName?.trim() || '',
         normalizedNewEmail,
         normalizedNewEmail,
@@ -1949,6 +2185,19 @@ export function createCrmRoutes(
         memberId,
         businessId
       );
+
+      writeAuditLog(db, {
+        businessId,
+        actorUserId: req.authUser?.id,
+        action: 'member_account_updated',
+        entityType: 'membership',
+        entityId: memberId,
+        details: { accountSlot: nextSlot, role: nextRole, status: status || existingMember.status },
+        ipAddress: req.ip,
+      });
+
+      void syncSystemAccountsToFirestore(db);
+
       res.json({
         member: db
           .prepare(`
@@ -1976,7 +2225,7 @@ export function createCrmRoutes(
         return res.status(404).json({ error: 'Account membership not found' });
       }
       const existingUser = existingMember.user_id
-        ? (db.prepare('SELECT username FROM users WHERE id = ?').get(existingMember.user_id) as any)
+        ? (db.prepare('SELECT id, username, email FROM users WHERE id = ?').get(existingMember.user_id) as any)
         : null;
       if (
         existingMember.invited_email?.toLowerCase() === MASTER_OWNER_EMAIL ||
@@ -1986,20 +2235,36 @@ export function createCrmRoutes(
       }
 
       db.prepare('DELETE FROM business_memberships WHERE id = ? AND business_id = ?').run(memberId, businessId);
+
+      // Clean up orphaned non-owner user record so revoked credentials cannot sign in and username can be reused
+      if (existingUser?.id) {
+        const remainingCount = (
+          db.prepare('SELECT COUNT(*) as c FROM business_memberships WHERE user_id = ?').get(existingUser.id) as { c: number }
+        ).c;
+        if (remainingCount === 0) {
+          db.prepare('UPDATE leads SET assigned_to_user_id = NULL WHERE assigned_to_user_id = ?').run(existingUser.id);
+          db.prepare('UPDATE follow_up_tasks SET assigned_to_user_id = NULL WHERE assigned_to_user_id = ?').run(existingUser.id);
+          db.prepare('DELETE FROM users WHERE id = ?').run(existingUser.id);
+        }
+      }
+
       writeAuditLog(db, {
         businessId,
         actorUserId: req.authUser?.id,
         action: 'access_revoked',
         entityType: 'membership',
         entityId: memberId,
-        details: { email: existingMember.invited_email },
+        details: { email: existingMember.invited_email, username: existingUser?.username || null },
         ipAddress: req.ip,
       });
+
+      void removeAccountFromFirestore(existingUser?.id, existingMember.invited_email);
+      void syncSystemAccountsToFirestore(db);
       res.json({ deleted: true });
     }
   );
 
-  // Sync Firebase Firestore authorized full-access accounts into workspace memberships
+  // Sync Firebase Firestore authorized accounts (Manager & Moderator) into workspace memberships
   router.post(
     '/businesses/:businessId/access-accounts/sync',
     authMiddleware,
@@ -2014,10 +2279,10 @@ export function createCrmRoutes(
       const now = new Date().toISOString();
       const upsertStmt = db.prepare(`
         INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'business_admin', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(business_id, invited_email) DO UPDATE SET
           account_slot = excluded.account_slot,
-          role = 'business_admin',
+          role = excluded.role,
           display_name = COALESCE(NULLIF(excluded.display_name, ''), display_name),
           status = CASE
             WHEN LOWER(business_memberships.invited_email) = ? THEN 'active'
@@ -2030,10 +2295,12 @@ export function createCrmRoutes(
       for (const acct of accounts) {
         if (!acct || typeof acct.email !== 'string' || !acct.email.includes('@')) continue;
         const normalizedEmail = acct.email.trim().toLowerCase();
-        const slot: 'manager' | 'accountant' = acct.accountType === 'manager' ? 'manager' : 'accountant';
+        const isAcctOwner = normalizedEmail === MASTER_OWNER_EMAIL;
+        const slot: 'manager' | 'moderator' = isAcctOwner || acct.accountType === 'manager' ? 'manager' : 'moderator';
+        const roleVal: Role = slot === 'manager' ? 'business_admin' : 'moderator';
         const existingUser = db.prepare('SELECT id, full_name FROM users WHERE LOWER(email) = ?').get(normalizedEmail) as any;
         const status =
-          normalizedEmail === MASTER_OWNER_EMAIL
+          isAcctOwner
             ? 'active'
             : acct.status === 'inactive'
               ? 'inactive'
@@ -2046,7 +2313,8 @@ export function createCrmRoutes(
           existingUser?.id || null,
           normalizedEmail,
           (acct.displayName || existingUser?.full_name || normalizedEmail.split('@')[0]).trim(),
-          normalizedEmail === MASTER_OWNER_EMAIL ? 'manager' : slot,
+          slot,
+          roleVal,
           status,
           now,
           now,
@@ -2056,14 +2324,14 @@ export function createCrmRoutes(
 
       const members = db
         .prepare(`
-          SELECT bm.*, u.full_name, u.avatar_url,
-                 CASE WHEN LOWER(bm.invited_email) = ? THEN 1 ELSE 0 END as is_owner
+          SELECT bm.*, u.username, u.full_name, u.avatar_url,
+                 CASE WHEN LOWER(bm.invited_email) = ? OR LOWER(u.username) = ? THEN 1 ELSE 0 END as is_owner
           FROM business_memberships bm
           LEFT JOIN users u ON u.id = bm.user_id
           WHERE bm.business_id = ?
           ORDER BY is_owner DESC, bm.created_at ASC
         `)
-        .all(MASTER_OWNER_EMAIL, businessId);
+        .all(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId);
       res.json({ synced: true, members });
     }
   );

@@ -247,8 +247,8 @@ function initSchema(db: SqlDb) {
       user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
       invited_email TEXT NOT NULL,
       display_name TEXT,
-      account_slot TEXT NOT NULL DEFAULT 'accountant' CHECK (account_slot IN ('manager', 'accountant')),
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'business_admin', 'manager', 'employee')),
+      account_slot TEXT NOT NULL DEFAULT 'moderator' CHECK (account_slot IN ('manager', 'moderator', 'accountant')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'business_admin', 'manager', 'moderator', 'employee')),
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited', 'inactive')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -349,8 +349,12 @@ function initSchema(db: SqlDb) {
       business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
       lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
       author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      title TEXT,
+      category TEXT NOT NULL DEFAULT 'conversation',
       content TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      is_pinned INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS lead_activities (
@@ -456,7 +460,46 @@ function initSchema(db: SqlDb) {
 
   const memberCols = db.prepare('PRAGMA table_info(business_memberships)').all() as Array<{ name: string }>;
   if (!memberCols.some((c) => c.name === 'account_slot')) {
-    db.exec("ALTER TABLE business_memberships ADD COLUMN account_slot TEXT NOT NULL DEFAULT 'accountant';");
+    db.exec("ALTER TABLE business_memberships ADD COLUMN account_slot TEXT NOT NULL DEFAULT 'moderator';");
+  }
+
+  // Migrate existing business_memberships CHECK constraints to allow 'moderator' account_slot and role
+  const bmSchemaRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'business_memberships'")
+    .get() as { sql?: string } | undefined;
+  if (bmSchemaRow?.sql && !bmSchemaRow.sql.includes("'moderator'")) {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec('BEGIN;');
+    try {
+      db.exec(`
+        CREATE TABLE business_memberships_new (
+          id TEXT PRIMARY KEY,
+          business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+          user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          invited_email TEXT NOT NULL,
+          display_name TEXT,
+          account_slot TEXT NOT NULL DEFAULT 'moderator' CHECK (account_slot IN ('manager', 'moderator', 'accountant')),
+          role TEXT NOT NULL CHECK (role IN ('super_admin', 'business_admin', 'manager', 'moderator', 'employee')),
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited', 'inactive')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (business_id, invited_email)
+        );
+        INSERT INTO business_memberships_new (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
+        SELECT id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at
+        FROM business_memberships;
+        DROP TABLE business_memberships;
+        ALTER TABLE business_memberships_new RENAME TO business_memberships;
+        CREATE INDEX IF NOT EXISTS idx_memberships_biz ON business_memberships(business_id);
+        CREATE INDEX IF NOT EXISTS idx_memberships_user ON business_memberships(user_id);
+      `);
+      db.exec('COMMIT;');
+    } catch (err) {
+      db.exec('ROLLBACK;');
+      throw err;
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON;');
+    }
   }
 
   const leadCols = db.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string }>;
@@ -471,6 +514,20 @@ function initSchema(db: SqlDb) {
     db.exec('ALTER TABLE leads ADD COLUMN read_by_user_id TEXT;');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_leads_biz_read ON leads(business_id, is_read);');
+
+  const noteCols = db.prepare('PRAGMA table_info(lead_notes)').all() as Array<{ name: string }>;
+  if (!noteCols.some((c) => c.name === 'title')) {
+    db.exec('ALTER TABLE lead_notes ADD COLUMN title TEXT;');
+  }
+  if (!noteCols.some((c) => c.name === 'category')) {
+    db.exec("ALTER TABLE lead_notes ADD COLUMN category TEXT NOT NULL DEFAULT 'conversation';");
+  }
+  if (!noteCols.some((c) => c.name === 'is_pinned')) {
+    db.exec('ALTER TABLE lead_notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!noteCols.some((c) => c.name === 'updated_at')) {
+    db.exec('ALTER TABLE lead_notes ADD COLUMN updated_at TEXT;');
+  }
 
   if (!hadIsRead) {
     // One-time backfill for pre-existing DBs: mark older/already-handled leads as read (green),

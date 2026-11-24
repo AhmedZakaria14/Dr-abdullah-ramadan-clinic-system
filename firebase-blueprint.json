@@ -9,7 +9,7 @@
         "username": { "type": "string", "maxLength": 64 },
         "email": { "type": "string", "format": "email", "maxLength": 254 },
         "fullName": { "type": "string", "maxLength": 160 },
-        "accountType": { "type": "string", "enum": ["manager", "accountant"] },
+        "accountType": { "type": "string", "enum": ["manager", "moderator"] },
         "isOwner": { "type": "boolean" },
         "defaultLanguage": { "type": "string", "enum": ["ar", "en"] },
         "theme": { "type": "string", "enum": ["light", "dark"] }
@@ -18,13 +18,13 @@
     },
     "AuthorizedEmail": {
       "title": "AuthorizedEmail",
-      "description": "Full-access clinic account authorization managed by the system owner (admin / azeco77@gmail.com)",
+      "description": "Clinic account authorization (Manager with full access or Moderator with lead follow-up permissions) managed by the system owner (admin / azeco77@gmail.com)",
       "type": "object",
       "properties": {
         "email": { "type": "string", "format": "email", "maxLength": 254 },
         "displayName": { "type": "string", "maxLength": 160 },
-        "accountType": { "type": "string", "enum": ["manager", "accountant"] },
-        "role": { "type": "string", "enum": ["full_access"] },
+        "accountType": { "type": "string", "enum": ["manager", "moderator"] },
+        "role": { "type": "string", "enum": ["full_access", "moderator"] },
         "isOwner": { "type": "boolean" },
         "status": { "type": "string", "enum": ["active", "inactive"] },
         "grantedBy": { "type": "string", "format": "email", "maxLength": 254 }
@@ -64,19 +64,19 @@
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Clinic staff user profiles isolated by UID"
+      "description": "Clinic staff user profiles (Managers and Moderators) isolated by UID"
     },
     "/authorized_emails/{emailId}": {
       "schema": { "$ref": "#/entities/AuthorizedEmail" },
-      "description": "Full-access Manager & Reception/Accountant emails authorized by Master Owner azeco77@gmail.com"
+      "description": "Authorized Manager (full_access) and Moderator (lead follow-up) accounts managed by Master Owner azeco77@gmail.com"
     },
     "/businesses/{businessId}": {
       "schema": { "$ref": "#/entities/Business" },
-      "description": "Dr. Abdullah Ramadan Dental Clinics workspaces isolated by owner and authorized accounts"
+      "description": "Dr. Abdullah Ramadan Dental Clinics workspaces isolated by owner, managers, and moderators"
     },
     "/businesses/{businessId}/leads/{leadId}": {
       "schema": { "$ref": "#/entities/Lead" },
-      "description": "Patient inquiries and leads strictly scoped to clinic workspace"
+      "description": "Patient inquiries and leads accessible to authorized managers and moderators for follow-up"
     }
   }
 }

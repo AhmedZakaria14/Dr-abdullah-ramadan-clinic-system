@@ -8,7 +8,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-const BRAND_ICON_URL = '/favicon.png?v=3';
+const BRAND_ICON_URL = new URL('/icon-512.png?v=4', self.location.origin).href;
 
 self.addEventListener('push', (event) => {
   let payload = {};
@@ -22,7 +22,6 @@ self.addEventListener('push', (event) => {
   const options = {
     body: payload.body || '',
     icon: BRAND_ICON_URL,
-    badge: BRAND_ICON_URL,
     tag: payload.tag || payload.id || 'dr-abdullah-ramadan-notification',
     silent: false,
     renotify: true,

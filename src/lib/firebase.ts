@@ -1,7 +1,17 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { Auth, getAuth } from 'firebase/auth';
-import { Firestore, doc, getDocFromServer, getFirestore, initializeFirestore } from 'firebase/firestore';
+import {
+  Firestore,
+  deleteDoc,
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+  setDoc,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { MASTER_OWNER_EMAIL } from './constants';
+import type { AccountSlot } from '../types/crm';
 
 export {
   CLINIC_WORKSPACE_ID,
@@ -103,4 +113,67 @@ export function handleFirestoreError(
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+export async function syncAuthorizedAccountToFirestore(params: {
+  email: string;
+  displayName?: string;
+  accountType: AccountSlot;
+  status?: 'active' | 'inactive';
+}): Promise<boolean> {
+  const auth = getFirebaseAuth();
+  if (!auth.currentUser?.emailVerified) {
+    // Traditional username/password session: server-side SQLite + Admin sync handles persistence
+    return false;
+  }
+  const normalizedEmail = params.email.trim().toLowerCase().slice(0, 254);
+  if (!normalizedEmail || !normalizedEmail.includes('@')) return false;
+
+  const db = getFirestoreDb();
+  const path = `authorized_emails/${normalizedEmail}`;
+  const accountType: AccountSlot = params.accountType === 'manager' ? 'manager' : 'moderator';
+  const role = accountType === 'manager' ? 'full_access' : 'moderator';
+  try {
+    await setDoc(
+      doc(db, 'authorized_emails', normalizedEmail),
+      {
+        email: normalizedEmail,
+        displayName: (params.displayName || normalizedEmail.split('@')[0]).trim().slice(0, 160),
+        accountType,
+        role,
+        isOwner: normalizedEmail === MASTER_OWNER_EMAIL,
+        status: params.status === 'inactive' ? 'inactive' : 'active',
+        grantedBy: (auth.currentUser.email || MASTER_OWNER_EMAIL).toLowerCase().slice(0, 254),
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+    return true;
+  } catch (error) {
+    try {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    } catch {
+      return false;
+    }
+  }
+}
+
+export async function removeAuthorizedAccountFromFirestore(email: string): Promise<boolean> {
+  const auth = getFirebaseAuth();
+  if (!auth.currentUser?.emailVerified) return false;
+  const normalizedEmail = email.trim().toLowerCase().slice(0, 254);
+  if (!normalizedEmail || normalizedEmail === MASTER_OWNER_EMAIL) return false;
+
+  const db = getFirestoreDb();
+  const path = `authorized_emails/${normalizedEmail}`;
+  try {
+    await deleteDoc(doc(db, 'authorized_emails', normalizedEmail));
+    return true;
+  } catch (error) {
+    try {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    } catch {
+      return false;
+    }
+  }
 }

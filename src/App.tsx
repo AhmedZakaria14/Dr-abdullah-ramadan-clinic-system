@@ -30,6 +30,7 @@ import {
   Search,
   MoreHorizontal,
   AlertCircle,
+  UserCheck,
 } from 'lucide-react';
 import {
   AnalyticsResponse,
@@ -376,6 +377,14 @@ function LeadFlowAppInner() {
   );
   const activeBusiness = allBusinesses.find((b) => b.id === activeBusinessId) || null;
   const effectiveRole: Role = activeBusiness?.member_role || 'business_admin';
+  const isAdmin = effectiveRole === 'business_admin' || effectiveRole === 'super_admin';
+  const isModerator = effectiveRole === 'moderator' || activeBusiness?.account_slot === 'moderator';
+
+  useEffect(() => {
+    if (!isAdmin && (activeTab === 'team' || activeTab === 'integrations' || activeTab === 'settings')) {
+      setActiveTab('leads');
+    }
+  }, [isAdmin, activeTab]);
 
   const loadWorkspaceData = async (bizId: string) => {
     if (!bizId) return;
@@ -1041,16 +1050,17 @@ function LeadFlowAppInner() {
     }
   };
 
-  const navItems: Array<{ id: NavTab; label: string; icon: any }> = [
+  const allNavItems: Array<{ id: NavTab; label: string; icon: any; adminOnly?: boolean }> = [
     { id: 'dashboard', label: t.navDashboard, icon: LayoutDashboard },
     { id: 'leads', label: t.navLeads, icon: Users },
     { id: 'pipeline', label: t.navPipeline, icon: Kanban },
     { id: 'followups', label: t.navFollowUps, icon: CalendarClock },
     { id: 'campaigns', label: t.navCampaigns, icon: BarChart3 },
-    { id: 'team', label: t.navTeam, icon: UserCog },
-    { id: 'integrations', label: t.navIntegrations, icon: Plug },
-    { id: 'settings', label: t.navSettings, icon: Settings },
+    { id: 'team', label: t.navTeam, icon: UserCog, adminOnly: true },
+    { id: 'integrations', label: t.navIntegrations, icon: Plug, adminOnly: true },
+    { id: 'settings', label: t.navSettings, icon: Settings, adminOnly: true },
   ];
+  const navItems = isAdmin ? allNavItems : allNavItems.filter((item) => !item.adminOnly);
 
   if (!authReady) {
     return (
@@ -1160,14 +1170,16 @@ function LeadFlowAppInner() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowWorkspaceModal(true)}
-              className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>{t.createWorkspace}</span>
-            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowWorkspaceModal(true)}
+                className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{t.createWorkspace}</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -1253,17 +1265,19 @@ function LeadFlowAppInner() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  setShowWorkspaceModal(true);
-                }}
-                className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 min-h-[42px] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>{t.createWorkspace}</span>
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setShowWorkspaceModal(true);
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 min-h-[42px] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>{t.createWorkspace}</span>
+                </button>
+              )}
             </div>
 
             <nav className="p-3 space-y-1 flex-1 overflow-y-auto">
@@ -1632,10 +1646,20 @@ function LeadFlowAppInner() {
             </div>
 
             <div className="flex items-center gap-2">
-              {(authUser.isOwner || authUser.username === DEFAULT_ADMIN_USERNAME || authUser.email?.toLowerCase() === MASTER_OWNER_EMAIL) && (
+              {authUser.isOwner || authUser.username === DEFAULT_ADMIN_USERNAME || authUser.email?.toLowerCase() === MASTER_OWNER_EMAIL ? (
                 <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-amber-100 dark:bg-amber-900/50 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:text-amber-200">
                   <Crown className="h-3 w-3" />
                   <span>{isAr ? 'المدير الرئيسي' : 'Owner'}</span>
+                </span>
+              ) : isModerator ? (
+                <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-sky-100 dark:bg-sky-900/50 px-2 py-0.5 text-[11px] font-bold text-[#0077B6] dark:text-cyan-300">
+                  <UserCheck className="h-3 w-3" />
+                  <span>{isAr ? 'موديراتور · متابعة الليدز' : 'Moderator'}</span>
+                </span>
+              ) : (
+                <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-emerald-100 dark:bg-emerald-900/50 px-2 py-0.5 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                  <Crown className="h-3 w-3" />
+                  <span>{isAr ? 'حساب مدير' : 'Manager'}</span>
                 </span>
               )}
               <span className="hidden sm:inline font-mono text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-40 truncate" dir="ltr">
@@ -1982,7 +2006,7 @@ function LeadFlowAppInner() {
               />
             ) : activeTab === 'campaigns' ? (
               <CampaignsView lang={lang} analytics={analytics} />
-            ) : activeTab === 'team' ? (
+            ) : activeTab === 'team' && isAdmin ? (
               <TeamView
                 lang={lang}
                 business={activeBusiness}
@@ -1992,7 +2016,7 @@ function LeadFlowAppInner() {
                 onRefresh={() => setRefreshCounter((c) => c + 1)}
                 onNotify={notify}
               />
-            ) : activeTab === 'integrations' ? (
+            ) : activeTab === 'integrations' && isAdmin ? (
               <IntegrationsView
                 lang={lang}
                 businessId={activeBusiness.id}
@@ -2000,7 +2024,7 @@ function LeadFlowAppInner() {
                 onLeadsUpdated={() => setRefreshCounter((c) => c + 1)}
                 onNotify={notify}
               />
-            ) : (
+            ) : activeTab === 'settings' && isAdmin ? (
               <SettingsView
                 lang={lang}
                 business={activeBusiness}
@@ -2009,6 +2033,20 @@ function LeadFlowAppInner() {
                 onRefreshBusiness={() => loadSessionAndWorkspaces()}
                 onRefreshFields={() => setRefreshCounter((c) => c + 1)}
                 onNotify={notify}
+              />
+            ) : (
+              <LeadsView
+                lang={lang}
+                businessId={activeBusiness.id}
+                userRole={effectiveRole}
+                stages={stages}
+                customFields={customFields}
+                members={members}
+                onSelectLead={(id, lead) => navigateToLead(id, activeBusiness.id, lead)}
+                onAddLead={() => setShowCreateLeadModal(true)}
+                onNotify={notify}
+                onLeadReadChanged={() => setRefreshCounter((c) => c + 1)}
+                refreshTrigger={refreshCounter}
               />
             )}
           </Suspense>

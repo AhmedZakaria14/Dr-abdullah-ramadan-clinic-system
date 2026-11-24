@@ -392,7 +392,7 @@ export function createGoogleRoutes(db: SqlDb, authMiddleware: any) {
   router.post(
     '/businesses/:businessId/leads/:leadId/google-doc',
     authMiddleware,
-    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager', 'employee']),
+    requireBusinessAccess(db, ['super_admin', 'business_admin', 'manager', 'moderator', 'employee']),
     async (req: AuthRequest, res) => {
       const accessToken = getGoogleToken(req);
       if (!accessToken) {

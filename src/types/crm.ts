@@ -1,13 +1,13 @@
 export type Language = 'ar' | 'en';
 export type ThemeMode = 'light' | 'dark';
-export type Role = 'super_admin' | 'business_admin' | 'manager' | 'employee';
-export type AccountSlot = 'manager' | 'accountant';
+export type Role = 'super_admin' | 'business_admin' | 'manager' | 'moderator' | 'employee';
+export type AccountSlot = 'manager' | 'moderator';
 
 export interface FirestoreAuthorizedAccount {
   email: string;
   displayName?: string;
   accountType: AccountSlot;
-  role: 'full_access';
+  role: 'full_access' | 'moderator';
   isOwner?: boolean;
   status: 'active' | 'inactive';
   grantedBy: string;
@@ -120,6 +120,22 @@ export interface Lead {
   is_demo: number;
   created_at: string;
   updated_at: string;
+}
+
+export type NoteCategory = 'conversation' | 'medical' | 'treatment' | 'general';
+
+export interface LeadNote {
+  id: string;
+  business_id: string;
+  lead_id: string;
+  author_user_id?: string | null;
+  author_name?: string | null;
+  title?: string | null;
+  category?: NoteCategory | null;
+  content: string;
+  is_pinned?: number;
+  created_at: string;
+  updated_at?: string | null;
 }
 
 export type TreatmentStageKey = 'consultation' | 'root_canal' | 'orthodontics' | 'completed';

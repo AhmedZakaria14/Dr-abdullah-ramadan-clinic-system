@@ -5,9 +5,7 @@ import {
   Phone,
   MessageSquare,
   Mail,
-  FileText,
   CalendarPlus,
-  Send,
   AlertTriangle,
   ExternalLink,
   CheckCircle2,
@@ -24,7 +22,17 @@ import {
   CheckCheck,
   EyeOff,
 } from 'lucide-react';
-import { CustomField, FollowUpTask, Language, Lead, PipelineStage, Role, TeamMember } from '../../types/crm';
+import {
+  CustomField,
+  FollowUpTask,
+  Language,
+  Lead,
+  LeadNote,
+  NoteCategory,
+  PipelineStage,
+  Role,
+  TeamMember,
+} from '../../types/crm';
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
@@ -36,6 +44,7 @@ import {
   DialectCode,
   resolveLeadWhatsAppNumber,
 } from '../../lib/whatsappMessage';
+import { RichNotesSection } from '../ui/RichNotesSection';
 
 interface LeadDetailViewProps {
   lang: Language;
@@ -120,12 +129,11 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
         }
       : null
   );
-  const [notes, setNotes] = useState<any[]>([]);
+  const [notes, setNotes] = useState<LeadNote[]>([]);
   const [activities, setActivities] = useState<any[]>([]);
   const [followUps, setFollowUps] = useState<FollowUpTask[]>([]);
   const [duplicates, setDuplicates] = useState<any[]>([]);
 
-  const [newNote, setNewNote] = useState('');
   const [followUpTitle, setFollowUpTitle] = useState('');
   const [followUpDue, setFollowUpDue] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -283,24 +291,89 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     }
   };
 
-  const handleAddNote = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newNote.trim()) return;
+  const handleCreateNote = async (payload: {
+    title: string;
+    category: NoteCategory;
+    content: string;
+    isPinned: boolean;
+  }): Promise<boolean> => {
     const targetId = lead?.id || leadId;
     try {
       await apiRequest(`/businesses/${businessId}/leads/${encodeURIComponent(targetId)}/notes`, {
         method: 'POST',
         body: JSON.stringify({
-          content: newNote.trim(),
+          title: payload.title || undefined,
+          category: payload.category,
+          content: payload.content,
+          isPinned: payload.isPinned,
           ...buildHintsPayload(lead),
         }),
       });
-      setNewNote('');
-      onNotify(isAr ? 'تمت إضافة الملاحظة' : 'Note added', 'success');
+      onNotify(isAr ? 'تم حفظ الملاحظة في سجل المريض' : 'Note saved to patient log', 'success');
       await loadDetail();
       onUpdated();
+      return true;
     } catch (err: any) {
       onNotify(err.message, 'error');
+      return false;
+    }
+  };
+
+  const handleUpdateNote = async (
+    noteId: string,
+    payload: {
+      title?: string;
+      category?: NoteCategory;
+      content?: string;
+      isPinned?: boolean;
+    }
+  ): Promise<boolean> => {
+    const targetId = lead?.id || leadId;
+    try {
+      await apiRequest(
+        `/businesses/${businessId}/leads/${encodeURIComponent(targetId)}/notes/${encodeURIComponent(noteId)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            ...payload,
+            ...buildHintsPayload(lead),
+          }),
+        }
+      );
+      await loadDetail();
+      onUpdated();
+      if (payload.content !== undefined && payload.title === undefined && payload.category === undefined && payload.isPinned === undefined) {
+        // Silent checklist toggle update
+      } else {
+        onNotify(isAr ? 'تم تحديث الملاحظة' : 'Note updated', 'success');
+      }
+      return true;
+    } catch (err: any) {
+      onNotify(err.message, 'error');
+      return false;
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string): Promise<boolean> => {
+    const targetId = lead?.id || leadId;
+    const hints = buildHintsPayload(lead);
+    const qs = new URLSearchParams();
+    if (hints.leadCode) qs.set('leadCode', hints.leadCode);
+    if (hints.externalRowId) qs.set('externalRowId', hints.externalRowId);
+    if (hints.phone) qs.set('phone', hints.phone);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    try {
+      await apiRequest(
+        `/businesses/${businessId}/leads/${encodeURIComponent(targetId)}/notes/${encodeURIComponent(noteId)}${suffix}`,
+        { method: 'DELETE' }
+      );
+      onNotify(isAr ? 'تم حذف الملاحظة' : 'Note deleted', 'info');
+      await loadDetail();
+      onUpdated();
+      return true;
+    } catch (err: any) {
+      onNotify(err.message, 'error');
+      return false;
     }
   };
 
@@ -806,47 +879,14 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
             )}
           </div>
 
-          {/* Internal Notes */}
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">{t.internalNotes}</h3>
-            <form onSubmit={handleAddNote} className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="text"
-                value={newNote}
-                onChange={(e) => setNewNote(e.target.value)}
-                placeholder={isAr ? 'اكتب ملاحظة داخلية حول مكالمة أو عرض سعر...' : 'Add internal note about call or quote...'}
-                className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 min-h-[44px] sm:min-h-0 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#0095D9]"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0077B6] hover:bg-[#006299] dark:bg-[#0096C7] dark:hover:bg-[#0077B6] px-4 min-h-[44px] sm:min-h-0 sm:py-2 text-xs font-semibold text-white transition-colors whitespace-nowrap"
-              >
-                <Send className="h-3.5 w-3.5" />
-                <span>{t.addNote}</span>
-              </button>
-            </form>
-
-            <div className="mt-4 space-y-2.5">
-              {notes.length === 0 ? (
-                <div className="text-xs text-slate-400 py-2">
-                  {isAr ? 'لا توجد ملاحظات مسجلة بعد' : 'No internal notes recorded yet'}
-                </div>
-              ) : (
-                notes.map((n) => (
-                  <div
-                    key={n.id}
-                    className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 p-3.5 text-xs transition-colors"
-                  >
-                    <div className="flex items-center justify-between text-slate-500 mb-1">
-                      <span className="font-semibold text-slate-700 dark:text-slate-300">{n.author_name || 'System'}</span>
-                      <span className="font-mono tabular-nums" dir="ltr">{formatCairoDateTime(n.created_at, lang)}</span>
-                    </div>
-                    <p className="text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap">{n.content}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+          {/* Rich Patient Notes & Clinical Observations */}
+          <RichNotesSection
+            lang={lang}
+            notes={notes}
+            onCreateNote={handleCreateNote}
+            onUpdateNote={handleUpdateNote}
+            onDeleteNote={handleDeleteNote}
+          />
 
           {/* Follow-up Tasks */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5">

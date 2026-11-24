@@ -32,20 +32,58 @@ const SYSTEM_ACCOUNTS = [
     is_platform_super_admin: 1,
     defaultPassword: DEFAULT_ADMIN_PASSWORD,
   },
-  {
-    id: 'clinic-accountant',
-    username: 'accountant',
-    email: 'accountant@drabdullahramadan.local',
-    full_name: 'حساب الاستقبال والمحاسبة (صلاحية كاملة) | Reception & Accountant',
-    account_slot: 'accountant' as const,
-    role: 'business_admin' as const,
-    is_platform_super_admin: 0,
-    defaultPassword: DEFAULT_ADMIN_PASSWORD,
-  },
 ];
+
+function removeAccountantAccount(db: SqlDb) {
+  const accountantUsers = db
+    .prepare(`
+      SELECT DISTINCT u.id
+      FROM users u
+      LEFT JOIN business_memberships bm ON bm.user_id = u.id AND bm.business_id = ?
+      WHERE (
+        u.id = 'clinic-accountant'
+        OR LOWER(COALESCE(u.username, '')) = 'accountant'
+        OR LOWER(COALESCE(u.email, '')) = 'accountant@drabdullahramadan.local'
+        OR bm.account_slot = 'accountant'
+      )
+      AND u.id != 'clinic-owner-manager'
+      AND LOWER(COALESCE(u.username, '')) != ?
+      AND LOWER(COALESCE(u.email, '')) != ?
+    `)
+    .all(CLINIC_WORKSPACE_ID, DEFAULT_ADMIN_USERNAME.toLowerCase(), MASTER_OWNER_EMAIL.toLowerCase()) as Array<{
+    id: string;
+  }>;
+
+  // Delete accountant memberships first (strictly excluding manager/owner)
+  db.prepare(`
+    DELETE FROM business_memberships
+    WHERE business_id = ?
+      AND (
+        account_slot = 'accountant'
+        OR LOWER(COALESCE(invited_email, '')) = 'accountant@drabdullahramadan.local'
+        OR user_id = 'clinic-accountant'
+      )
+      AND LOWER(COALESCE(invited_email, '')) != ?
+  `).run(CLINIC_WORKSPACE_ID, MASTER_OWNER_EMAIL.toLowerCase());
+
+  for (const row of accountantUsers) {
+    db.prepare('UPDATE leads SET assigned_to_user_id = NULL WHERE assigned_to_user_id = ?').run(row.id);
+    db.prepare('UPDATE follow_up_tasks SET assigned_to_user_id = NULL WHERE assigned_to_user_id = ?').run(row.id);
+    db.prepare(`
+      DELETE FROM users
+      WHERE id = ?
+        AND id != 'clinic-owner-manager'
+        AND LOWER(COALESCE(username, '')) != ?
+        AND LOWER(COALESCE(email, '')) != ?
+    `).run(row.id, DEFAULT_ADMIN_USERNAME.toLowerCase(), MASTER_OWNER_EMAIL.toLowerCase());
+  }
+}
 
 function ensureClinicSystemAccounts(db: SqlDb) {
   const now = new Date().toISOString();
+
+  // Remove accountant account only; keep Manager account intact
+  removeAccountantAccount(db);
 
   for (const acct of SYSTEM_ACCOUNTS) {
     const existingByUsername = db
@@ -110,13 +148,6 @@ function ensureClinicSystemAccounts(db: SqlDb) {
       .get(CLINIC_WORKSPACE_ID, userId, acct.email.toLowerCase()) as any;
 
     if (!existingMembership) {
-      if (acct.account_slot === 'accountant') {
-        const hasAnyAccountant = db
-          .prepare("SELECT id FROM business_memberships WHERE business_id = ? AND account_slot = 'accountant'")
-          .get(CLINIC_WORKSPACE_ID);
-        if (hasAnyAccountant) continue;
-      }
-
       db.prepare(`
         INSERT INTO business_memberships (id, business_id, user_id, invited_email, display_name, account_slot, role, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)

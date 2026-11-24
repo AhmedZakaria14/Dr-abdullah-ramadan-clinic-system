@@ -1,9 +1,18 @@
-import { BRAND_ICON_URL } from './constants';
+import { BRAND_NOTIFICATION_ICON_URL } from './constants';
 
 export type BrowserNotificationSupport = 'granted' | 'denied' | 'default' | 'unsupported';
 
 const shownNotificationIds = new Set<string>();
 let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+
+function getResolvedNotificationIconUrl(): string {
+  if (typeof window === 'undefined') return BRAND_NOTIFICATION_ICON_URL;
+  try {
+    return new URL(BRAND_NOTIFICATION_ICON_URL, window.location.origin).href;
+  } catch {
+    return BRAND_NOTIFICATION_ICON_URL;
+  }
+}
 
 export function getBrowserNotificationPermission(): BrowserNotificationSupport {
   if (typeof window === 'undefined' || typeof Notification === 'undefined') {
@@ -18,8 +27,11 @@ export async function ensureNotificationServiceWorker(): Promise<ServiceWorkerRe
   }
   if (!swRegistrationPromise) {
     swRegistrationPromise = navigator.serviceWorker
-      .register('/sw.js', { scope: '/' })
-      .then((reg) => reg)
+      .register('/sw.js?v=4', { scope: '/' })
+      .then((reg) => {
+        reg.update().catch(() => {});
+        return reg;
+      })
       .catch(() => null);
   }
   return swRegistrationPromise;
@@ -63,6 +75,7 @@ export async function showBrowserPushNotification(params: {
   }
 
   const leadId = extractLeadIdFromLinkPath(params.linkPath);
+  const iconUrl = getResolvedNotificationIconUrl();
   const data = {
     linkPath: params.linkPath || '/',
     leadId,
@@ -75,8 +88,7 @@ export async function showBrowserPushNotification(params: {
     if (reg && 'showNotification' in reg) {
       await reg.showNotification(params.title, {
         body: params.body,
-        icon: BRAND_ICON_URL,
-        badge: BRAND_ICON_URL,
+        icon: iconUrl,
         tag: params.id,
         silent: false,
         data,
@@ -90,7 +102,7 @@ export async function showBrowserPushNotification(params: {
   try {
     const notif = new window.Notification(params.title, {
       body: params.body,
-      icon: BRAND_ICON_URL,
+      icon: iconUrl,
       tag: params.id,
       silent: false,
       data,
