@@ -26,13 +26,19 @@ export function buildApp(options?: { db?: SqlDb; tokenVerifier?: TokenVerifier }
   // Basic security headers & rate limiting on API
   app.use('/api', (_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'no-store');
     next();
   });
   app.use('/api', createRateLimiter(300, 60_000));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, timestamp: new Date().toISOString() });
+    try {
+      db.prepare('SELECT 1 FROM businesses LIMIT 1').get();
+      res.json({ ok: true, storage: process.env.NODE_ENV === 'production' ? 'persistent' : 'local', timestamp: new Date().toISOString() });
+    } catch {
+      res.status(503).json({ ok: false, error: 'Database unavailable' });
+    }
   });
 
   const authMiddleware = createAuthMiddleware(db, options?.tokenVerifier || defaultTokenVerifier);

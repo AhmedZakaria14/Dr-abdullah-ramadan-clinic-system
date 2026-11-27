@@ -249,6 +249,8 @@ export function createGoogleRoutes(db: SqlDb, authMiddleware: any) {
             businessId,
             rows,
             sourceLabel: `google_sheets:${spreadsheetId}`,
+            sourceSheetId: spreadsheetId,
+            sourceSheetName: sheetTitle,
             conflictPolicy,
             columnMapping,
             actorUserId: req.authUser?.id || null,

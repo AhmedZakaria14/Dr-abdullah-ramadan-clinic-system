@@ -8,14 +8,7 @@ import {
 } from './auth.ts';
 import { CLINIC_DEFAULT_SHEETS, CLINIC_WORKSPACE_ID } from './services/sheetSyncService.ts';
 
-const LEGACY_NON_CLINIC_BIZ_IDS = [
-  'demo-biz-atlas',
-  'demo-biz-careline',
-  'demo-biz-horizon',
-  'alsafa-steel-workspace',
-];
-
-const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_DEFAULT_PASSWORD || 'DentalClinic2026';
+const developmentAdminPassword = crypto.randomBytes(32).toString('base64url');
 const CLINIC_BRAND_NAME = 'عيادات دكتور عبدالله رمضان للأسنان';
 const CLINIC_BRAND_INDUSTRY = 'طب وجراحة وتجميل الأسنان | Dental Specialist & Clinics';
 const CLINIC_BRAND_LOGO_URL =
@@ -30,7 +23,6 @@ const SYSTEM_ACCOUNTS = [
     account_slot: 'manager' as const,
     role: 'business_admin' as const,
     is_platform_super_admin: 1,
-    defaultPassword: DEFAULT_ADMIN_PASSWORD,
   },
 ];
 
@@ -110,6 +102,14 @@ function ensureClinicSystemAccounts(db: SqlDb) {
 
     const existingUser = existingByUsername || existingByEmail || existingById;
     const userId = existingUser?.id || acct.id;
+    const existingHash = existingUser?.password_hash;
+    const useExistingPassword = existingHash?.startsWith('scrypt:');
+    const bootstrapPassword = process.env.ADMIN_DEFAULT_PASSWORD ||
+      (process.env.NODE_ENV === 'production' ? '' : developmentAdminPassword);
+    if (!useExistingPassword && process.env.NODE_ENV === 'production' && bootstrapPassword.length < 12) {
+      throw new Error('Set a strong ADMIN_DEFAULT_PASSWORD to initialize the owner account');
+    }
+    const passwordHash = useExistingPassword ? existingHash : hashPassword(bootstrapPassword);
 
     if (!existingUser) {
       db.prepare(`
@@ -119,7 +119,7 @@ function ensureClinicSystemAccounts(db: SqlDb) {
         userId,
         `seed-uid-${acct.id}`,
         acct.username,
-        hashPassword(acct.defaultPassword),
+        passwordHash,
         acct.email,
         acct.full_name,
         acct.is_platform_super_admin,
@@ -127,10 +127,6 @@ function ensureClinicSystemAccounts(db: SqlDb) {
         now
       );
     } else {
-      const nextPasswordHash =
-        existingUser.password_hash && existingUser.password_hash.startsWith('scrypt:')
-          ? existingUser.password_hash
-          : hashPassword(acct.defaultPassword);
       const nextUsername = existingUser.username || acct.username;
       const superFlag = acct.is_platform_super_admin === 1 ? 1 : undefined;
       db.prepare(`
@@ -140,7 +136,7 @@ function ensureClinicSystemAccounts(db: SqlDb) {
             is_platform_super_admin = COALESCE(?, is_platform_super_admin),
             updated_at = ?
         WHERE id = ?
-      `).run(nextUsername, nextPasswordHash, superFlag ?? null, now, userId);
+      `).run(nextUsername, passwordHash, superFlag ?? null, now, userId);
     }
 
     const existingMembership = db
@@ -208,10 +204,10 @@ function ensureClinicGoogleSheetsIntegration(db: SqlDb) {
     );
   } else {
     const prevCfg = JSON.parse(existing.config_json || '{}');
-    if ((!Array.isArray(prevCfg.sheetSources) || prevCfg.sheetSources.length === 0) && prevCfg.sheetSourcesCleared !== true) {
+    if (!Array.isArray(prevCfg.sheetSources) && !prevCfg.sheetUrl && !prevCfg.spreadsheetId && !prevCfg.publicCsvUrl && !prevCfg.sheetSourcesCleared) {
       const upgradedCfg = {
-        ...prevCfg,
         ...defaultConfig,
+        ...prevCfg,
       };
       db.prepare(`
         UPDATE integrations
@@ -242,11 +238,6 @@ function ensureClinicGoogleSheetsIntegration(db: SqlDb) {
 }
 
 export function ensureDemoData(db: SqlDb) {
-  // Remove any legacy non-clinic workspaces if present
-  for (const legacyId of LEGACY_NON_CLINIC_BIZ_IDS) {
-    db.prepare('DELETE FROM businesses WHERE id = ?').run(legacyId);
-  }
-
   const existing = db
     .prepare('SELECT id FROM businesses WHERE id = ?')
     .get(CLINIC_WORKSPACE_ID) as { id: string } | undefined;
@@ -340,7 +331,6 @@ function seedClinicWorkspace(db: SqlDb) {
     );
   });
 
-  // Clean integration placeholders (NOT linked to Al-Safa Steel's sheet)
   ensureClinicGoogleSheetsIntegration(db);
 
   db.prepare(`

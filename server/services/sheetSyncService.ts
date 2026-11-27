@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { GoogleAuth } from 'google-auth-library';
 import { SqlDb, deterministicSheetLeadId, normalizePhoneE164 } from '../db.ts';
 import { addSseClient, removeSseClient, broadcastWorkspaceEvent } from './realtimeService.ts';
 import { createAndBroadcastNotification } from './notificationService.ts';
@@ -579,7 +580,7 @@ export function syncSheetRowsToWorkspace(
 
   const existingLeads = db
     .prepare(
-      'SELECT id, lead_code, source, external_row_id, status_id, full_name, phone, email, interested_service, notes_summary, custom_values_json, created_at, updated_at FROM leads WHERE business_id = ?'
+      'SELECT id, lead_code, source, external_row_id, status_id, full_name, phone, phone_e164, email, interested_service, notes_summary, custom_values_json, created_at, updated_at FROM leads WHERE business_id = ?'
     )
     .all(businessId) as Array<{
     id: string;
@@ -589,6 +590,7 @@ export function syncSheetRowsToWorkspace(
     status_id: string | null;
     full_name: string;
     phone: string | null;
+    phone_e164: string | null;
     email: string | null;
     interested_service: string | null;
     notes_summary: string | null;
@@ -597,10 +599,27 @@ export function syncSheetRowsToWorkspace(
     updated_at: string;
   }>;
 
+  const rowIdentity = (name: string, phone: string, email: string, date: string) =>
+    JSON.stringify([name.trim().toLowerCase(), phone, email.trim().toLowerCase(), date]);
+
   const existingByExtId = new Map<string, (typeof existingLeads)[number]>();
-  for (const el of existingLeads) {
-    if (el.external_row_id) {
-      existingByExtId.set(el.external_row_id.trim(), el);
+  const existingByIdentity = new Map<string, (typeof existingLeads)[number]>();
+  const legacyByContact = new Map<string, (typeof existingLeads)[number] | null>();
+  for (const lead of existingLeads) {
+    if (!lead.external_row_id) continue;
+    existingByExtId.set(lead.external_row_id.trim(), lead);
+    let stored: any;
+    try {
+      stored = JSON.parse(lead.custom_values_json || '{}') || {};
+    } catch {
+      continue;
+    }
+    if ((stored.source_sheet_id || '') !== (sourceSheetId || '')) continue;
+    if (stored._sheet_identity) {
+      existingByIdentity.set(stored._sheet_identity, lead);
+    } else if (/^[0-9a-f]{20}$/.test(lead.external_row_id) && stored.sheet_row_number) {
+      const key = rowIdentity(lead.full_name, lead.phone_e164 || lead.phone || '', lead.email || '', '');
+      legacyByContact.set(key, legacyByContact.has(key) ? null : lead);
     }
   }
 
@@ -658,7 +677,6 @@ export function syncSheetRowsToWorkspace(
         form_name = ?,
         original_answers_json = ?,
         custom_values_json = ?,
-        notes_summary = COALESCE(NULLIF(?, ''), notes_summary),
         created_at = ?,
         updated_at = ?
     WHERE id = ? AND business_id = ?
@@ -684,6 +702,7 @@ export function syncSheetRowsToWorkspace(
   const createdNotifications: any[] = [];
   const nowIso = new Date().toISOString();
   const seenInCurrentPass = new Set<string>();
+  const seenRowIdentities = new Map<string, number>();
 
   // Step 1: Parse all rows across the entire sheet (never stopping at blank rows)
   interface ParsedRowCandidate {
@@ -756,15 +775,23 @@ export function syncSheetRowsToWorkspace(
       biz.default_country_code || '+20'
     );
 
-    const externalRowId =
-      rawId ||
-      crypto
-        .createHash('sha1')
-        .update(
-          `sheet:${sourceSheetId || 'default'}:row:${rawName.toLowerCase()}:${phoneE164 || rawPhone}:${rawEmail.toLowerCase()}:${cell(idxCreatedTime)}:${r}`
-        )
-        .digest('hex')
-        .slice(0, 20);
+    const rawCreatedAt = cell(idxCreatedTime);
+    const contact = rowIdentity(rawName, phoneE164 || rawPhone, rawEmail, '');
+    const identity = rowIdentity(rawName, phoneE164 || rawPhone, rawEmail, rawCreatedAt);
+    const occurrence = (seenRowIdentities.get(identity) || 0) + 1;
+    if (!rawId) seenRowIdentities.set(identity, occurrence);
+    const anonymousId = crypto.createHash('sha256')
+      .update(JSON.stringify([sourceSheetId, identity, occurrence])).digest('hex').slice(0, 24);
+    const legacyId = crypto.createHash('sha1')
+      .update(`sheet:${sourceSheetId || 'default'}:row:${rawName.toLowerCase()}:${phoneE164 || rawPhone}:${rawEmail.toLowerCase()}:${rawCreatedAt}:${r}`)
+      .digest('hex').slice(0, 20);
+    const legacy = legacyByContact.get(contact);
+    const legacyMatches = legacy && (!rawCreatedAt || legacy.created_at === parseSheetTimestamp(rawCreatedAt, '+02:00'));
+    const priorLead = !rawId
+      ? existingByIdentity.get(anonymousId) || existingByExtId.get(legacyId) || (legacyMatches ? legacy : null)
+      : null;
+    const priorExternalId = priorLead?.external_row_id;
+    const externalRowId = rawId || (priorExternalId && !seenInCurrentPass.has(priorExternalId) ? priorExternalId : anonymousId);
 
     // Deduplicate identical externalRowId within the same sheet read
     if (seenInCurrentPass.has(externalRowId)) {
@@ -820,7 +847,8 @@ export function syncSheetRowsToWorkspace(
     }
 
     const sheetRowNumber = r + 1;
-    const createdAt = parseSheetTimestamp(cell(idxCreatedTime), '+02:00');
+    const existing = existingByExtId.get(externalRowId);
+    const createdAt = rawCreatedAt ? parseSheetTimestamp(rawCreatedAt, '+02:00') : (existing?.created_at || nowIso);
 
     const customValues: Record<string, unknown> = {
       dental_service: productLabel || '',
@@ -842,6 +870,8 @@ export function syncSheetRowsToWorkspace(
       source_sheet_name: sourceSheetName || '',
     };
 
+    if (!rawId) customValues._sheet_identity = anonymousId;
+
     const rowFingerprint = crypto
       .createHash('sha1')
       .update(
@@ -862,7 +892,7 @@ export function syncSheetRowsToWorkspace(
           campaignName,
           adSetName,
           adName,
-          createdAt,
+          rawCreatedAt,
           originalAnswers,
           sourceSheetId,
         })
@@ -981,6 +1011,7 @@ export function syncSheetRowsToWorkspace(
           status_id: item.mappedStatusId,
           full_name: item.rawName,
           phone: item.displayPhone,
+          phone_e164: item.phoneE164,
           email: item.rawEmail || null,
           interested_service: item.productLabel,
           notes_summary: item.quantitySizes || null,
@@ -1012,7 +1043,12 @@ export function syncSheetRowsToWorkspace(
           existing.created_at || nowIso
         );
 
-        const prevCustom = JSON.parse(existing.custom_values_json || '{}');
+        let prevCustom: Record<string, unknown> = {};
+        try {
+          prevCustom = JSON.parse(existing.custom_values_json || '{}') || {};
+        } catch {
+          // A valid row can restore sheet metadata on legacy records.
+        }
         if (prevCustom._sheet_hash === item.rowFingerprint) {
           skippedCount += 1;
           continue;
@@ -1047,7 +1083,6 @@ export function syncSheetRowsToWorkspace(
           item.formName,
           JSON.stringify(item.originalAnswers),
           JSON.stringify(mergedCustom),
-          item.quantitySizes || '',
           item.createdAt || existing.created_at,
           nowIso,
           existing.id,
@@ -1272,17 +1307,18 @@ export function syncAttachedSheetToWorkspace(
 }
 
 export function extractGoogleSheetCsvUrl(inputUrl: string): string | null {
-  const trimmed = inputUrl.trim();
-  if (!trimmed) return null;
-  if (trimmed.includes('export?format=csv') || trimmed.includes('output=csv') || trimmed.includes('tqx=out:csv')) {
-    return trimmed;
+  try {
+    const url = new URL(inputUrl.trim());
+    if (url.protocol !== 'https:' || url.hostname !== 'docs.google.com' || url.username || url.password || url.port) return null;
+    const spreadsheetId = extractSpreadsheetIdFromUrl(url.pathname);
+    if (!spreadsheetId) return null;
+    const gid = url.searchParams.get('gid') || new URLSearchParams(url.hash.slice(1)).get('gid');
+    const exportUrl = new URL(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`);
+    if (gid && /^\d+$/.test(gid)) exportUrl.searchParams.set('gid', gid);
+    return exportUrl.toString();
+  } catch {
+    return null;
   }
-  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (!match) return null;
-  const spreadsheetId = match[1];
-  const gidMatch = trimmed.match(/[?#&]gid=(\d+)/);
-  const gid = gidMatch ? gidMatch[1] : '0';
-  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 }
 
 export function extractSpreadsheetIdFromUrl(inputUrl?: string | null): string | null {
@@ -1541,6 +1577,26 @@ export function removeSheetSourceFromConfig(
  * Fetches all rows from Google Sheets using either Google Sheets API v4 (if OAuth token or API key is configured)
  * or Google Sheets live CSV export / gviz endpoints with strict cache-busting headers.
  */
+let sheetsServiceAuth: GoogleAuth | undefined;
+
+async function getSheetsServiceToken() {
+  const credentials = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
+  if (!credentials) return null;
+  try {
+    if (!sheetsServiceAuth) {
+      const { client_email, private_key } = JSON.parse(credentials);
+      if (!client_email || !private_key) throw new Error('Incomplete service account');
+      sheetsServiceAuth = new GoogleAuth({
+        credentials: { client_email, private_key },
+        scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+      });
+    }
+    return await sheetsServiceAuth.getAccessToken();
+  } catch {
+    throw new Error('Unable to authenticate the Google Sheets service account');
+  }
+}
+
 export async function fetchLiveGoogleSheetRows(params: {
   spreadsheetId?: string | null;
   publicCsvUrl?: string | null;
@@ -1562,76 +1618,52 @@ export async function fetchLiveGoogleSheetRows(params: {
     '';
 
   const apiKey = process.env.GOOGLE_SHEETS_API_KEY?.trim() || '';
+  const token = googleAccessToken || await getSheetsServiceToken();
+  const baseCsvUrl = (rawCsvUrl && extractGoogleSheetCsvUrl(rawCsvUrl)) ||
+    (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv` : '');
+  if (!baseCsvUrl) throw new Error('No Google Sheet URL configured for this workspace');
+  const gid = new URL(baseCsvUrl).searchParams.get('gid');
 
-  // Method 1: Google Sheets API v4 (when OAuth Bearer token or GOOGLE_SHEETS_API_KEY is available)
-  if ((googleAccessToken || apiKey) && spreadsheetId) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const range = sheetTitle ? `'${sheetTitle.replace(/'/g, "''")}'` : 'A:ZZ';
-      const apiUrl = new URL(
-        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`
-      );
-      apiUrl.searchParams.set('valueRenderOption', 'FORMATTED_VALUE');
-      if (!googleAccessToken && apiKey) {
-        apiUrl.searchParams.set('key', apiKey);
-      }
-
-      const headers: Record<string, string> = {
-        'Cache-Control': 'no-cache, no-store, max-age=0',
-        Pragma: 'no-cache',
-      };
-      if (googleAccessToken) {
-        headers.Authorization = `Bearer ${googleAccessToken}`;
-      }
-
-      const res = await fetch(apiUrl.toString(), {
-        headers,
-        signal: controller.signal,
+  if ((token || apiKey) && spreadsheetId) {
+    const base = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}`;
+    const range = sheetTitle ? `'${sheetTitle.replace(/'/g, "''")}'` : 'A:ZZ';
+    const useGridFilter = !sheetTitle && gid !== null;
+    const url = new URL(useGridFilter
+      ? `${base}/values:batchGetByDataFilter`
+      : `${base}/values/${encodeURIComponent(range)}`);
+    const headers = new Headers({ 'Cache-Control': 'no-cache, no-store, max-age=0' });
+    const options: RequestInit = { headers, signal: AbortSignal.timeout(timeoutMs) };
+    if (useGridFilter) {
+      headers.set('Content-Type', 'application/json');
+      options.method = 'POST';
+      options.body = JSON.stringify({
+        dataFilters: [{ gridRange: { sheetId: Number(gid) } }],
+        valueRenderOption: 'FORMATTED_VALUE',
       });
+    } else {
+      url.searchParams.set('valueRenderOption', 'FORMATTED_VALUE');
+    }
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    else url.searchParams.set('key', apiKey);
 
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        if (Array.isArray(data?.values) && data.values.length >= 1) {
-          return {
-            rows: data.values.map((r: any[]) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [])),
-            sourceLabel: 'google_sheets_api_v4',
-          };
-        }
-      } else if (res.status === 429 || res.status >= 500) {
-        const err: any = new Error(`Google Sheets API HTTP ${res.status}`);
-        err.status = res.status;
-        throw err;
-      }
-    } finally {
-      clearTimeout(timer);
+    const res = await fetch(url, options);
+    if (res.ok) {
+      const data = await res.json() as any;
+      const values = useGridFilter ? data.valueRanges?.[0]?.valueRange?.values : data.values;
+      return {
+        rows: Array.isArray(values) ? values.map((r: unknown[]) => r.map((c) => String(c ?? ''))) : [],
+        sourceLabel: 'google_sheets_api_v4',
+      };
+    }
+    if (token || sheetTitle || res.status === 429 || res.status >= 500) {
+      throw Object.assign(new Error(`Google Sheets API HTTP ${res.status}`), { status: res.status });
     }
   }
 
-  // Method 2: Direct Google Sheets CSV Export + default first tab + gviz/tq fallback
-  const baseCsvUrl =
-    (rawCsvUrl && extractGoogleSheetCsvUrl(rawCsvUrl)) ||
-    (spreadsheetId
-      ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=0`
-      : '');
-
-  if (!baseCsvUrl) {
-    throw new Error('No Google Sheet URL configured for this workspace');
-  }
-
-  const gidMatch = baseCsvUrl.match(/[?&]gid=(\d+)/);
-  const gid = gidMatch ? gidMatch[1] : '0';
-
-  const candidateUrls = Array.from(
-    new Set(
-      [
-        baseCsvUrl,
-        spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv` : '',
-        spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&gid=${gid}` : '',
-        spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv` : '',
-      ].filter(Boolean)
-    )
-  );
+  const gvizUrl = new URL(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`);
+  if (gid !== null) gvizUrl.searchParams.set('gid', gid);
+  if (sheetTitle) gvizUrl.searchParams.set('sheet', sheetTitle);
+  const candidateUrls = sheetTitle ? [gvizUrl.toString()] : [baseCsvUrl, gvizUrl.toString()];
 
   let lastErr: any = null;
   let sawAuthBlocked = false;
@@ -1654,7 +1686,7 @@ export async function fetchLiveGoogleSheetRows(params: {
         if (res.status === 401 || res.status === 403) {
           sawAuthBlocked = true;
           const err: any = new Error(
-            'الشيت خاص (غير مشارك للعامة) — افتح مشاركة الشيت واختر "أي شخص لديه الرابط (عارض)" | Sheet is private (HTTP 401/403) — set sharing to "Anyone with the link (Viewer)"'
+            'تعذر الوصول إلى الشيت. شاركه مع حساب الخدمة المخصص للمزامنة | Share this sheet with the configured Google Sheets service account'
           );
           err.status = res.status;
           lastErr = err;
@@ -1668,10 +1700,10 @@ export async function fetchLiveGoogleSheetRows(params: {
       }
 
       const csvText = await res.text();
-      if (!csvText || !csvText.trim() || csvText.trim().startsWith('<!DOCTYPE html') || csvText.trim().startsWith('<html')) {
+      if (/text\/html/i.test(res.headers.get('content-type') || '') || /^\s*<(?:!doctype|html)/i.test(csvText)) {
         sawAuthBlocked = true;
         const err: any = new Error(
-          'الشيت خاص (غير مشارك للعامة) — افتح مشاركة الشيت واختر "أي شخص لديه الرابط (عارض)" | Sheet requires link-sharing access ("Anyone with the link — Viewer")'
+          'تعذر الوصول إلى الشيت. راجع صلاحية حساب خدمة المزامنة | Verify the Google Sheets service account has access'
         );
         err.status = 401;
         lastErr = err;
@@ -1679,9 +1711,7 @@ export async function fetchLiveGoogleSheetRows(params: {
       }
 
       const rows = parseCsvRows(csvText);
-      if (rows.length >= 1) {
-        return { rows, sourceLabel: 'google_sheet_live_csv' };
-      }
+      return { rows, sourceLabel: 'google_sheet_live_csv' };
     } catch (err: any) {
       lastErr = err;
       if (err?.status === 429) throw err;
@@ -1716,8 +1746,10 @@ export async function syncWorkspaceFromConfiguredSheet(
   }
 ): Promise<SheetSyncResult> {
   const existingInFlight = inFlightWorkspaceSyncs.get(businessId);
-  if (existingInFlight && !options?.csvText && !options?.sheetUrl) {
-    return existingInFlight;
+  if (existingInFlight) {
+    if (!options?.csvText && !options?.sheetUrl && !options?.sheetId) return existingInFlight;
+    await existingInFlight.catch(() => {});
+    return syncWorkspaceFromConfiguredSheet(db, businessId, options);
   }
 
   const runtime = getWorkspaceSheetSyncRuntimeState(businessId);
@@ -1728,7 +1760,7 @@ export async function syncWorkspaceFromConfiguredSheet(
     throw new Error(`Sync backoff active — retrying in ${waitSec}s`);
   }
 
-  const runPromise = (async (): Promise<SheetSyncResult> => {
+  const runPromise = Promise.resolve().then(async (): Promise<SheetSyncResult> => {
     const startMs = Date.now();
     runtime.isSyncing = true;
     runtime.lastAttemptAt = new Date().toISOString();
@@ -1802,6 +1834,10 @@ export async function syncWorkspaceFromConfiguredSheet(
         ? allSources.filter((s) => s.id === options.sheetId || s.spreadsheetId === options.sheetId)
         : allSources;
 
+      if (targetSources.length === 0) {
+        throw Object.assign(new Error('Configured Google Sheet was not found'), { status: 404 });
+      }
+
       let totalProcessed = 0;
       let totalCreated = 0;
       let totalUpdated = 0;
@@ -1841,6 +1877,10 @@ export async function syncWorkspaceFromConfiguredSheet(
             googleAccessToken: options?.googleAccessToken || null,
           });
 
+          const currentSource = getConfiguredSheetSources(db, businessId).find((source) => source.id === sheet.id);
+          if (!currentSource || currentSource.enabled === false ||
+            currentSource.publicCsvUrl !== sheet.publicCsvUrl || currentSource.sheetTitle !== sheet.sheetTitle) continue;
+
           const res = syncSheetRowsToWorkspace(db, {
             businessId,
             rows,
@@ -1853,8 +1893,6 @@ export async function syncWorkspaceFromConfiguredSheet(
             recordSyncLog: true,
             emitNotificationOnChanges: options?.emitNotificationOnChanges ?? true,
             syncDurationMs: Date.now() - sheetStart,
-            reconcileMissingSheetRows:
-              sourceLabel === 'google_sheet_live_csv' || sourceLabel === 'google_sheets_api_v4',
           });
 
           totalProcessed += res.processedCount;
@@ -1930,6 +1968,10 @@ export async function syncWorkspaceFromConfiguredSheet(
         conflictPolicy: prevCfg.conflictPolicy || 'sheet_wins',
       };
 
+      if (succeededCount === 0 && !firstError) {
+        throw Object.assign(new Error('Google Sheets configuration changed during sync'), { status: 409 });
+      }
+
       if (succeededCount === 0 && firstError) {
         runtime.consecutiveFailures += 1;
         runtime.lastError = firstError?.message || 'Google Sheets sync failed';
@@ -1947,7 +1989,6 @@ export async function syncWorkspaceFromConfiguredSheet(
           ON CONFLICT(business_id, provider) DO UPDATE SET
             status = 'error',
             display_name = excluded.display_name,
-            config_json = excluded.config_json,
             last_error = excluded.last_error,
             updated_at = excluded.updated_at
         `).run(
@@ -1987,7 +2028,6 @@ export async function syncWorkspaceFromConfiguredSheet(
         ON CONFLICT(business_id, provider) DO UPDATE SET
           status = excluded.status,
           display_name = excluded.display_name,
-          config_json = excluded.config_json,
           last_sync_at = excluded.last_sync_at,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
@@ -2017,13 +2057,11 @@ export async function syncWorkspaceFromConfiguredSheet(
         createdNotifications: allCreatedNotifs,
         sheetResults,
       };
-    } catch (err: any) {
-      throw err;
     } finally {
       runtime.isSyncing = false;
       inFlightWorkspaceSyncs.delete(businessId);
     }
-  })();
+  });
 
   inFlightWorkspaceSyncs.set(businessId, runPromise);
   return runPromise;
@@ -2044,7 +2082,12 @@ export async function ensureWorkspaceLiveSynced(
 
   const runtime = getWorkspaceSheetSyncRuntimeState(businessId);
   const existingInFlight = inFlightWorkspaceSyncs.get(businessId);
-  const maxAgeMs = options?.maxAgeMs ?? 15_000;
+  const integration = db.prepare(`
+    SELECT config_json FROM integrations WHERE business_id = ? AND provider = 'google_sheets'
+  `).get(businessId);
+  const cfg = JSON.parse(integration?.config_json || '{}');
+  const syncIntervalSec = Number(cfg.syncIntervalSec) || 15;
+  const maxAgeMs = Math.max(options?.maxAgeMs || 0, Math.min(120, Math.max(10, syncIntervalSec)) * 1000);
   const lastLiveMs = runtime.lastLiveSyncAt ? Date.parse(runtime.lastLiveSyncAt) : 0;
   const isFresh = lastLiveMs > 0 && Date.now() - lastLiveMs < maxAgeMs;
 
@@ -2061,11 +2104,7 @@ export async function ensureWorkspaceLiveSynced(
     return null;
   }
 
-  const integ = db
-    .prepare("SELECT config_json FROM integrations WHERE business_id = ? AND provider = 'google_sheets'")
-    .get(businessId) as { config_json: string } | undefined;
-  const cfg = integ ? JSON.parse(integ.config_json || '{}') : {};
-  if (cfg.autoScheduled === false && lastLiveMs > 0) {
+  if (cfg.autoScheduled === false) {
     return null;
   }
 
@@ -2073,7 +2112,7 @@ export async function ensureWorkspaceLiveSynced(
   const syncPromise =
     existingInFlight ||
     syncWorkspaceFromConfiguredSheet(db, businessId, {
-      emitNotificationOnChanges: runtime.lastLiveSyncAt !== null,
+      emitNotificationOnChanges: true,
     });
 
   let timer: NodeJS.Timeout | undefined;
@@ -2093,59 +2132,21 @@ export async function ensureWorkspaceLiveSynced(
   }
 }
 
-const activeWatchers = new Set<string>();
+export function startAttachedSheetWatcher(db: SqlDb) {
+  if (process.env.NODE_ENV === 'test') return;
 
-/**
- * Runs background 15-second adaptive Google Sheets polling across all configured sheets
- * for the workspace.
- */
-export function startAttachedSheetWatcher(
-  db: SqlDb,
-  businessId = CLINIC_WORKSPACE_ID,
-  _filePath?: string
-) {
-  const watcherKey = `${businessId}:remote`;
-  if (activeWatchers.has(watcherKey)) return;
-  activeWatchers.add(watcherKey);
-
-  const hasConfiguredSheet = () => {
+  const poll = async () => {
     try {
-      const integ = db
-        .prepare("SELECT config_json FROM integrations WHERE business_id = ? AND provider = 'google_sheets'")
-        .get(businessId) as { config_json: string } | undefined;
-      if (integ) {
-        const cfg = JSON.parse(integ.config_json || '{}');
-        if (cfg.autoScheduled === false) return false;
-      }
-      return getConfiguredSheetSources(db, businessId).some((s) => s.enabled !== false);
-    } catch {
-      return false;
+      const workspaces = db.prepare(`
+        SELECT business_id FROM integrations WHERE provider = 'google_sheets'
+      `).all() as Array<{ business_id: string }>;
+      await Promise.allSettled(workspaces.map(({ business_id }) =>
+        ensureWorkspaceLiveSynced(db, business_id, { timeoutMs: 30_000 })
+      ));
+    } finally {
+      setTimeout(() => void poll().catch(console.error), 5_000).unref();
     }
   };
 
-  // Trigger initial live Google Sheet sync on server start
-  if (process.env.NODE_ENV !== 'test') {
-    setTimeout(() => {
-      if (!hasConfiguredSheet()) return;
-      syncWorkspaceFromConfiguredSheet(db, businessId, {
-        emitNotificationOnChanges: false,
-      }).catch(() => {
-        // silent background fallback; error & retry window recorded in runtime state
-      });
-    }, 50);
-  }
-
-  // Adaptive 15-second background polling across all configured Google Sheets
-  const remotePollTimer = setInterval(async () => {
-    if (process.env.NODE_ENV === 'test') return;
-    if (!hasConfiguredSheet()) return;
-    try {
-      await syncWorkspaceFromConfiguredSheet(db, businessId, {
-        emitNotificationOnChanges: true,
-      });
-    } catch {
-      // Backoff is recorded in workspaceRuntimeMap and integrations.last_error
-    }
-  }, 15_000);
-  remotePollTimer.unref?.();
+  void poll().catch(console.error);
 }

@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Search, X, Loader2, ArrowUpRight, Building2, Phone, Users } from 'lucide-react';
 import { Language, Lead } from '../../types/crm';
 import { apiRequest } from '../../lib/api';
-import { markLeadReadLocally, reconcileLeadsReadState } from '../../lib/leadReadState';
 
 interface GlobalLeadSearchProps {
   lang: Language;
@@ -89,8 +88,7 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
           `/businesses/${businessId}/leads?q=${encodeURIComponent(trimmed)}&page=1&pageSize=8`
         );
         if (cancelled) return;
-        const { leads: reconciled } = reconcileLeadsReadState(businessId, res.leads || []);
-        setResults(reconciled);
+        setResults(res.leads || []);
         setTotalMatches(res.total || 0);
         setActiveIndex(0);
         setOpen(true);
@@ -111,10 +109,9 @@ export const GlobalLeadSearch: React.FC<GlobalLeadSearchProps> = ({
   }, [businessId, query]);
 
   const handleChooseLead = (lead: Lead) => {
-    markLeadReadLocally(businessId, lead);
     setOpen(false);
     setQuery('');
-    onSelectLead(lead.id, { ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
+    onSelectLead(lead.id, lead);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

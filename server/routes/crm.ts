@@ -11,9 +11,7 @@ import {
   TokenVerifier,
   clearAccountRevocation,
   defaultTokenVerifier,
-  exportEncryptedAccountsVault,
   hashPassword,
-  hydrateAccountsFromEncryptedVault,
   normalizeLoginIdentifier,
   recordAccountRevocation,
   removeAccountFromFirestore,
@@ -64,12 +62,6 @@ export function createCrmRoutes(
 
   // Traditional Username & Password Login
   router.post('/auth/login', (req, res) => {
-    const incomingVault =
-      (typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null) ||
-      (typeof req.body?.accountVault === 'string' ? req.body.accountVault : null);
-    if (incomingVault) {
-      hydrateAccountsFromEncryptedVault(db, incomingVault);
-    }
 
     const rawUsername = typeof req.body?.username === 'string' ? normalizeLoginIdentifier(req.body.username) : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -140,7 +132,10 @@ export function createCrmRoutes(
       | { account_slot?: 'manager' | 'moderator' | 'accountant'; role?: Role }
       | undefined;
 
-    if (!isOwner && !membershipRow) {
+    const hasActiveWorkspace = db.prepare(`
+      SELECT 1 FROM business_memberships WHERE user_id = ? AND status = 'active' LIMIT 1
+    `).get(userRow.id);
+    if (!isOwner && !hasActiveWorkspace) {
       return res.status(403).json({ error: 'This account does not have active workspace access' });
     }
 
@@ -190,7 +185,6 @@ export function createCrmRoutes(
 
     res.json({
       token,
-      accountVault: exportEncryptedAccountsVault(db),
       user: {
         id: userRow.id,
         username: userRow.username || rawUsername,
@@ -209,10 +203,6 @@ export function createCrmRoutes(
 
   // Change Password for authenticated user
   router.post('/auth/change-password', authMiddleware, (req: AuthRequest, res) => {
-    const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
-    if (incomingVault) {
-      hydrateAccountsFromEncryptedVault(db, incomingVault);
-    }
     const { currentPassword, newPassword } = req.body || {};
     if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
       return res.status(400).json({ error: 'New password must be at least 6 characters' });
@@ -222,14 +212,14 @@ export function createCrmRoutes(
       return res.status(404).json({ error: 'User not found' });
     }
     if (dbUser.password_hash && !verifyPassword(String(currentPassword || ''), dbUser.password_hash)) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
+      return res.status(400).json({ error: 'Current password is incorrect' });
     }
     db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
       hashPassword(newPassword),
       new Date().toISOString(),
       dbUser.id
     );
-    res.json({ updated: true, accountVault: exportEncryptedAccountsVault(db) });
+    res.json({ updated: true });
   });
 
   // Current user & accessible businesses
@@ -393,7 +383,7 @@ export function createCrmRoutes(
       }
     }, 25_000);
 
-    req.on('close', () => {
+    res.on('close', () => {
       clearInterval(keepalive);
       removeSseClient(businessId, res);
     });
@@ -629,6 +619,17 @@ export function createCrmRoutes(
   router.post('/businesses/:businessId/sheet-source/sync', authMiddleware, requireBusinessAccess(db), async (req: AuthRequest, res) => {
     const { businessId } = req.params;
     const { mode, csvText, sheetUrl, sheetName, sheetId, autoScheduled, silent, source } = req.body || {};
+    const canConfigure = req.authUser?.isOwner || ['super_admin', 'business_admin'].includes(req.membership?.role || '');
+    const changesSource = Boolean(sheetUrl || csvText) || typeof autoScheduled === 'boolean';
+    if (changesSource && !canConfigure) {
+      return res.status(403).json({ error: 'Only workspace administrators can configure or upload Sheets data' });
+    }
+    if (silent === true && !changesSource && !sheetId) {
+      const result = await ensureWorkspaceLiveSynced(db, businessId);
+      const runtime = getWorkspaceSheetSyncRuntimeState(businessId);
+      if (!result) return res.json({ ok: true, deferred: true });
+      return res.json({ ...result, lastSuccessAt: runtime.lastSuccessAt, lastError: runtime.lastError });
+    }
 
     try {
       if (typeof autoScheduled === 'boolean') {
@@ -674,7 +675,7 @@ export function createCrmRoutes(
       });
     } catch (err: any) {
       const runtime = getWorkspaceSheetSyncRuntimeState(businessId);
-      const httpStatus = err?.status === 400 ? 400 : 502;
+      const httpStatus = [400, 404].includes(err?.status) ? err.status : 502;
       res.status(httpStatus).json({
         error: err?.message || 'Google Sheets sync failed',
         sheetErrorStatus: typeof err?.status === 'number' ? err.status : 502,
@@ -1301,13 +1302,14 @@ export function createCrmRoutes(
     }
 
     const canonicalLeadId = lead.id;
+    const recordOpen = req.query.markRead !== 'false';
 
     if (req.membership?.role === 'employee' && lead.assigned_to_user_id !== req.authUser!.id) {
       return res.status(403).json({ error: 'Forbidden: You can only access leads assigned to you' });
     }
 
     // Opening the lead profile automatically marks an unread lead as read (green)
-    if (!lead.is_read) {
+    if (recordOpen && !lead.is_read) {
       const readNow = new Date().toISOString();
       const validReaderId = resolveValidUserId(db, req.authUser?.id);
       db.prepare(`
@@ -1323,20 +1325,22 @@ export function createCrmRoutes(
       broadcastWorkspaceEvent(businessId, 'lead_updated', { businessId, leadId: canonicalLeadId, isRead: true });
     }
 
-    recordMemberLiveAction(db, {
-      businessId,
-      actorUserId: req.authUser?.id,
-      actorName: req.authUser?.fullName,
-      actorUsername: req.authUser?.username,
-      isActorOwnerOrAdmin: isStrictAdminOwner(req),
-      activityType: 'lead_viewed',
-      descriptionAr: `فتح ملف العميل "${lead.full_name}" (${lead.lead_code})`,
-      descriptionEn: `Opened lead profile "${lead.full_name}" (${lead.lead_code})`,
-      leadId: canonicalLeadId,
-      leadCode: lead.lead_code,
-      leadName: lead.full_name,
-      activeTab: 'leads',
-    });
+    if (recordOpen) {
+      recordMemberLiveAction(db, {
+        businessId,
+        actorUserId: req.authUser?.id,
+        actorName: req.authUser?.fullName,
+        actorUsername: req.authUser?.username,
+        isActorOwnerOrAdmin: isStrictAdminOwner(req),
+        activityType: 'lead_viewed',
+        descriptionAr: `فتح ملف العميل "${lead.full_name}" (${lead.lead_code})`,
+        descriptionEn: `Opened lead profile "${lead.full_name}" (${lead.lead_code})`,
+        leadId: canonicalLeadId,
+        leadCode: lead.lead_code,
+        leadName: lead.full_name,
+        activeTab: 'leads',
+      });
+    }
 
     const statusHistory = db
       .prepare(`
@@ -2303,10 +2307,6 @@ export function createCrmRoutes(
 
   // System Accounts (Manager & Moderator) + Traditional Username/Password Access
   router.get('/businesses/:businessId/members', authMiddleware, requireBusinessAccess(db), (req: AuthRequest, res) => {
-    const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
-    if (incomingVault) {
-      hydrateAccountsFromEncryptedVault(db, incomingVault);
-    }
     const { businessId } = req.params;
     const members = db
       .prepare(`
@@ -2323,7 +2323,7 @@ export function createCrmRoutes(
         ORDER BY is_owner DESC, bm.created_at ASC
       `)
       .all(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId);
-    res.json({ members, accountVault: exportEncryptedAccountsVault(db) });
+    res.json({ members });
   });
 
   router.post(
@@ -2331,10 +2331,6 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
-      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
-      if (incomingVault) {
-        hydrateAccountsFromEncryptedVault(db, incomingVault);
-      }
 
       const { businessId } = req.params;
       const { email, username, password, displayName, role, accountSlot } = req.body || {};
@@ -2534,7 +2530,7 @@ export function createCrmRoutes(
           LIMIT 1
         `)
         .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, businessId, existingUser?.id || '', effectiveEmail);
-      res.status(201).json({ member, accountVault: exportEncryptedAccountsVault(db) });
+      res.status(201).json({ member });
     }
   );
 
@@ -2543,10 +2539,6 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
-      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
-      if (incomingVault) {
-        hydrateAccountsFromEncryptedVault(db, incomingVault);
-      }
 
       const { businessId, memberId } = req.params;
       const { role, status, accountSlot, displayName, email, username, password } = req.body || {};
@@ -2694,7 +2686,6 @@ export function createCrmRoutes(
             WHERE bm.id = ?
           `)
           .get(MASTER_OWNER_EMAIL, DEFAULT_ADMIN_USERNAME, memberId),
-        accountVault: exportEncryptedAccountsVault(db),
       });
     }
   );
@@ -2704,10 +2695,6 @@ export function createCrmRoutes(
     authMiddleware,
     requireBusinessAccess(db, ['super_admin', 'business_admin']),
     (req: AuthRequest, res) => {
-      const incomingVault = typeof req.headers['x-account-vault'] === 'string' ? req.headers['x-account-vault'] : null;
-      if (incomingVault) {
-        hydrateAccountsFromEncryptedVault(db, incomingVault);
-      }
 
       const { businessId, memberId } = req.params;
       const existingMember = db
@@ -2759,7 +2746,7 @@ export function createCrmRoutes(
 
       void removeAccountFromFirestore(existingUser?.id, existingMember.invited_email);
       void syncSystemAccountsToFirestore(db);
-      res.json({ deleted: true, accountVault: exportEncryptedAccountsVault(db) });
+      res.json({ deleted: true });
     }
   );
 
