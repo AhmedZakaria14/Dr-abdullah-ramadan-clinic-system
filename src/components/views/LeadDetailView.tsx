@@ -36,7 +36,6 @@ import {
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
 import { formatCairoDateTime } from '../../lib/dateFormat';
-import { markLeadReadLocally, markLeadUnreadLocally } from '../../lib/leadReadState';
 import {
   applyContactedStageToLead,
   clearLeadWhatsAppContactedLocally,
@@ -60,6 +59,7 @@ interface LeadDetailViewProps {
   lang: Language;
   businessId: string;
   leadId: string;
+  refreshTrigger: number;
   initialLead?: Lead | null;
   userRole: Role;
   stages: PipelineStage[];
@@ -118,6 +118,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   businessId,
   leadId,
   initialLead,
+  refreshTrigger,
   userRole,
   stages,
   customFields,
@@ -130,15 +131,7 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
   const isAr = lang === 'ar';
 
   const [loading, setLoading] = useState(!initialLead);
-  const [lead, setLead] = useState<Lead | null>(() =>
-    initialLead
-      ? {
-          ...initialLead,
-          is_read: 1,
-          read_at: initialLead.read_at || new Date().toISOString(),
-        }
-      : null
-  );
+  const [lead, setLead] = useState<Lead | null>(initialLead || null);
   const [notes, setNotes] = useState<LeadNote[]>([]);
   const [activities, setActivities] = useState<any[]>([]);
   const [followUps, setFollowUps] = useState<FollowUpTask[]>([]);
@@ -164,14 +157,14 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     };
   };
 
-  const loadDetail = async () => {
+  const loadDetail = async (markRead = false) => {
     const seq = ++detailSeqRef.current;
     const hintRef = lead || initialLead;
     if (!hintRef) {
       setLoading(true);
     }
     try {
-      const qs = new URLSearchParams();
+      const qs = new URLSearchParams({ markRead: String(markRead) });
       if (hintRef?.lead_code) qs.set('leadCode', hintRef.lead_code);
       if (hintRef?.external_row_id) qs.set('externalRowId', hintRef.external_row_id);
       if (hintRef?.phone_e164 || hintRef?.phone) qs.set('phone', hintRef.phone_e164 || hintRef.phone || '');
@@ -192,9 +185,6 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
       setFollowUps(res.followUps || []);
       setDuplicates(res.duplicates || []);
       if (reconciled.lead) {
-        if (reconciled.lead.is_read) {
-          markLeadReadLocally(businessId, reconciled.lead);
-        }
         if (reconciled.needsSync) {
           void sendWhatsAppContactRequest(businessId, reconciled.lead).then((syncRes) => {
             if (syncRes?.lead) {
@@ -232,18 +222,22 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
     if (initialLead) {
       const reconciledInit = reconcileLeadWhatsAppStatus(
         businessId,
-        {
-          ...initialLead,
-          is_read: 1,
-          read_at: initialLead.read_at || new Date().toISOString(),
-        },
+        initialLead,
         stages
       );
       setLead(reconciledInit.lead);
       setLoading(false);
     }
-    loadDetail();
+    void loadDetail(true);
+    return () => { detailSeqRef.current += 1; };
   }, [businessId, leadId]);
+
+  const previousRefresh = React.useRef(refreshTrigger);
+  useEffect(() => {
+    if (previousRefresh.current === refreshTrigger) return;
+    previousRefresh.current = refreshTrigger;
+    void loadDetail();
+  }, [refreshTrigger]);
 
   useEffect(() => {
     if (stages.length === 0) return;
@@ -289,12 +283,8 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
           }),
         }
       );
-      if (nextIsRead) {
-        markLeadReadLocally(businessId, res.lead || lead);
-      } else {
-        markLeadUnreadLocally(businessId, res.lead || lead);
-      }
-      setLead((prev) => (prev ? { ...prev, ...res.lead, is_read: nextIsRead ? 1 : 0 } : prev));
+      detailSeqRef.current += 1;
+      setLead((prev) => (prev ? { ...prev, ...res.lead } : prev));
       onUpdated();
       onNotify(
         nextIsRead
@@ -358,7 +348,6 @@ export const LeadDetailView: React.FC<LeadDetailViewProps> = ({
 
     const targetId = activeLead.id || leadId;
     const identityLead: Lead = { ...activeLead, id: targetId };
-    markLeadReadLocally(businessId, identityLead);
     markLeadWhatsAppContactedLocally(businessId, identityLead);
 
     const contactedStage = findContactedStage(stages);

@@ -610,8 +610,8 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
                         <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/60 px-2.5 py-2 text-[11px] text-amber-950 dark:text-amber-200 leading-relaxed">
                           {isAuthErr
                             ? isAr
-                              ? 'هذا الشيت خاص حالياً (HTTP 401). لتفعيل المزامنة الحية المستمرة: افتح الشيت ◄ اضغط "مشاركة (Share)" ◄ غيّر الوصول العام إلى "أي شخص لديه الرابط (Anyone with the link) — عارض (Viewer)" ثم اضغط مزامنة.'
-                              : 'This sheet is currently private (HTTP 401). Open the sheet → click Share → set General Access to "Anyone with the link (Viewer)", then click Sync.'
+                              ? 'تحقق من مشاركة الشيت مع حساب الخدمة المخصص للمزامنة بصلاحية العارض.'
+                              : 'Verify that the Google Sheets service account has Viewer access to this sheet.'
                             : sheet.lastError}
                         </div>
                       )}
@@ -668,8 +668,8 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
             </div>
             <p className="leading-relaxed">
               {isAr
-                ? 'يقوم النظام بفحص جميع الشيتات المربوطة كل 15 ثانية تلقائياً وسحب جميع الأعمدة والبيانات بدون أي فقد مع منع التكرار وعرض مصدر الشيت لكل مريض. تأكد من تفعيل خيار المشاركة "أي شخص لديه الرابط — عارض" لكل شيت.'
-                : 'The system polls all linked Google Sheets every 15 seconds, preserves every column without data loss, prevents duplicates, and tags each patient with their source sheet. Make sure each sheet is shared as "Anyone with the link — Viewer".'}
+                ? 'يفحص الخادم الشيتات المربوطة تلقائياً. شارك الشيتات الخاصة مع حساب خدمة المزامنة بصلاحية العارض.'
+                : 'The server checks linked sheets automatically. Give the Google Sheets service account Viewer access to private sheets.'}
             </p>
           </div>
         </div>

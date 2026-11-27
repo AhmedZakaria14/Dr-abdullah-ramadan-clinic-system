@@ -192,14 +192,14 @@ export function createDatabase(dbPath?: string, forceDriver?: 'native' | 'sqljs'
     if (NativeDatabaseSync) {
       try {
         const db = new NativeDatabaseSync(resolvedPath);
-        db.exec('PRAGMA foreign_keys = ON;');
+        db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
         if (resolvedPath !== ':memory:') {
           db.exec('PRAGMA journal_mode = WAL;');
         }
         initSchema(db);
         return db;
-      } catch {
-        // Fall through to sql.js if native node:sqlite is unavailable or missing flag
+      } catch (error) {
+        if (process.env.NODE_ENV === 'production') throw error;
       }
     }
   }

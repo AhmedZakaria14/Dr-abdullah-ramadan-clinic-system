@@ -36,13 +36,6 @@ import { formatCairoDateTime } from '../../lib/dateFormat';
 import { exportLeadsToPdf } from '../../lib/pdfExport';
 import { buildLeadWhatsAppUrl, detectLeadDialect } from '../../lib/whatsappMessage';
 import {
-  markLeadReadLocally,
-  markLeadsReadLocally,
-  markLeadsUnreadLocally,
-  markLeadUnreadLocally,
-  reconcileLeadsReadState,
-} from '../../lib/leadReadState';
-import {
   applyContactedStageToLead,
   clearLeadWhatsAppContactedLocally,
   findContactedStage,
@@ -235,23 +228,16 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       );
       if (seq !== fetchSeqRef.current) return;
 
-      const { leads: readReconciled, unsyncedIds, reconciledCount } = reconcileLeadsReadState(
-        businessId,
-        res.leads
-      );
       const { leads: reconciledLeads, unsyncedLeads: unsyncedWaLeads } = reconcileLeadsWhatsAppStatus(
         businessId,
-        readReconciled,
+        res.leads,
         stages
       );
-      const visibleLeads =
-        readState === 'unread' ? reconciledLeads.filter((l) => !l.is_read) : reconciledLeads;
-
-      setLeads(visibleLeads);
+      setLeads(reconciledLeads);
       setTotal(res.total);
       setTotalPages(res.totalPages);
       if (typeof res.unreadCount === 'number') {
-        setUnreadCount(Math.max(0, res.unreadCount - reconciledCount));
+        setUnreadCount(res.unreadCount);
       }
       setSelectedIds([]);
       if (peekLead) {
@@ -269,18 +255,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
           .catch(() => {});
       }
 
-      if (unsyncedIds.length > 0 && canManage) {
-        apiRequest(`/businesses/${businessId}/leads/bulk`, {
-          method: 'POST',
-          body: JSON.stringify({ leadIds: unsyncedIds, action: 'mark_read' }),
-        })
-          .then(() => {
-            onLeadReadChanged?.();
-          })
-          .catch(() => {
-            // ignore silent reconciliation failure
-          });
-      }
     } catch (err: any) {
       if (seq === fetchSeqRef.current) {
         onNotify(err.message, 'error');
@@ -396,60 +370,15 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     }
   };
 
-  const applyLeadReadStateLocally = (leadId: string, nextIsRead: boolean) => {
-    let delta = 0;
-    setLeads((prev) =>
-      prev.map((l) => {
-        if (l.id !== leadId) return l;
-        const wasRead = Boolean(l.is_read);
-        if (!wasRead && nextIsRead) delta = -1;
-        else if (wasRead && !nextIsRead) delta = 1;
-        return {
-          ...l,
-          is_read: nextIsRead ? 1 : 0,
-          read_at: nextIsRead ? new Date().toISOString() : null,
-        };
-      })
-    );
-    if (delta !== 0) {
-      setUnreadCount((c) => Math.max(0, c + delta));
-    }
-    setPeekLead((prev) =>
-      prev && prev.id === leadId
-        ? {
-            ...prev,
-            is_read: nextIsRead ? 1 : 0,
-            read_at: nextIsRead ? new Date().toISOString() : null,
-          }
-        : prev
-    );
-  };
-
   const handleOpenLeadProfile = (lead: Lead) => {
-    const nowIso = new Date().toISOString();
-    markLeadReadLocally(businessId, lead);
-    if (!lead.is_read) {
-      applyLeadReadStateLocally(lead.id, true);
-    }
-    onSelectLead(lead.id, {
-      ...lead,
-      is_read: 1,
-      read_at: lead.read_at || nowIso,
-    });
+    onSelectLead(lead.id, lead);
   };
 
-  const handleToggleLeadRead = async (leadId: string, nextIsRead: boolean, e?: React.MouseEvent) => {
+  const handleToggleLeadRead = async (leadId: string, nextIsRead: boolean, e?: React.MouseEvent, preview = false) => {
     if (e) e.stopPropagation();
     const prevLead = leads.find((l) => l.id === leadId) || (peekLead?.id === leadId ? peekLead : undefined);
-    const prevRead = Boolean(prevLead?.is_read);
-    applyLeadReadStateLocally(leadId, nextIsRead);
-    if (nextIsRead) {
-      markLeadReadLocally(businessId, prevLead || leadId);
-    } else {
-      markLeadUnreadLocally(businessId, prevLead || leadId);
-    }
     try {
-      await apiRequest(`/businesses/${businessId}/leads/${encodeURIComponent(leadId)}/read`, {
+      const { lead } = await apiRequest<{ lead: Lead }>(`/businesses/${businessId}/leads/${encodeURIComponent(leadId)}/read`, {
         method: 'POST',
         body: JSON.stringify({
           isRead: nextIsRead,
@@ -458,11 +387,10 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
           phone: prevLead?.phone_e164 || prevLead?.phone,
         }),
       });
-      if (readState) {
-        fetchLeads();
-      }
+      setPeekLead((current) => current?.id === lead.id ? lead : current);
+      void fetchLeads();
       onLeadReadChanged?.();
-      onNotify(
+      if (!preview) onNotify(
         nextIsRead
           ? isAr
             ? 'تم تمييز العميل كمقروء'
@@ -473,9 +401,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
         'info'
       );
     } catch (err: any) {
-      applyLeadReadStateLocally(leadId, prevRead);
-      if (prevRead) markLeadReadLocally(businessId, prevLead || leadId);
-      else markLeadUnreadLocally(businessId, prevLead || leadId);
+      void fetchLeads();
       onNotify(err.message, 'error');
     }
   };
@@ -483,11 +409,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
   const handleMarkAllNewAsRead = async () => {
     if (markingAllRead || unreadCount <= 0) return;
     setMarkingAllRead(true);
-    const prevCount = unreadCount;
-    const nowIso = new Date().toISOString();
-    markLeadsReadLocally(businessId, leads);
-    setLeads((prev) => prev.map((l) => (l.is_read ? l : { ...l, is_read: 1, read_at: nowIso })));
-    setUnreadCount(0);
     try {
       const res = await apiRequest<{ ok: boolean; updatedCount: number }>(
         `/businesses/${businessId}/leads/mark-all-read`,
@@ -501,8 +422,8 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
       onLeadReadChanged?.();
       onNotify(
         isAr
-          ? `تم تحويل ${res.updatedCount || prevCount} ليد جديدة إلى مقروءة (باللون الأخضر)`
-          : `Marked ${res.updatedCount || prevCount} new leads as read`,
+          ? `تم تحويل ${res.updatedCount} ليد جديدة إلى مقروءة (باللون الأخضر)`
+          : `Marked ${res.updatedCount} new leads as read`,
         'success'
       );
     } catch (err: any) {
@@ -514,28 +435,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
   };
 
   const handleOpenPeek = (lead: Lead, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    markLeadReadLocally(businessId, lead);
-    setPeekLead({ ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
-    if (!lead.is_read) {
-      applyLeadReadStateLocally(lead.id, true);
-      apiRequest(`/businesses/${businessId}/leads/${encodeURIComponent(lead.id)}/read`, {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify({
-          isRead: true,
-          leadCode: lead.lead_code,
-          externalRowId: lead.external_row_id,
-          phone: lead.phone_e164 || lead.phone,
-        }),
-      })
-        .then(() => {
-          onLeadReadChanged?.();
-        })
-        .catch(() => {
-          // ignore background read mark failure
-        });
-    }
+    e?.stopPropagation();
+    setPeekLead(lead);
+    if (!lead.is_read) void handleToggleLeadRead(lead.id, true, undefined, true);
   };
 
   const handleQuickStatusUpdate = async (leadId: string, statusId: string) => {
@@ -558,7 +460,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
         clearLeadWhatsAppContactedLocally(businessId, targetBefore || leadId);
       }
       const wasUnread = targetBefore ? !targetBefore.is_read : false;
-      markLeadReadLocally(businessId, targetBefore || leadId);
       setLeads((prev) =>
         prev.map((l) =>
           l.id === leadId
@@ -606,7 +507,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
     // Invalidate any earlier in-flight fetchLeads() so stale "new" rows cannot overwrite this click
     fetchSeqRef.current += 1;
 
-    markLeadReadLocally(businessId, lead);
     markLeadWhatsAppContactedLocally(businessId, lead);
 
     const contactedStage = findContactedStage(stages);
@@ -711,12 +611,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({
 
   const handleBulkReadState = async (action: 'mark_read' | 'mark_unread') => {
     if (selectedIds.length === 0) return;
-    const selectedLeads = leads.filter((l) => selectedIds.includes(l.id));
-    if (action === 'mark_read') {
-      markLeadsReadLocally(businessId, selectedLeads);
-    } else {
-      markLeadsUnreadLocally(businessId, selectedLeads);
-    }
     try {
       await apiRequest(`/businesses/${businessId}/leads/bulk`, {
         method: 'POST',

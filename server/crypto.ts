@@ -14,7 +14,9 @@ function getEncryptionKey(): Buffer {
   }
 
   const baseDir = process.env.VERCEL ? '/tmp' : process.cwd();
-  const dataDir = path.join(baseDir, '.data');
+  const dataDir = process.env.DATABASE_PATH && process.env.DATABASE_PATH !== ':memory:'
+    ? path.dirname(path.resolve(process.env.DATABASE_PATH))
+    : path.join(baseDir, '.data');
   try {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
@@ -30,12 +32,9 @@ function getEncryptionKey(): Buffer {
     fs.writeFileSync(keyFile, generated.toString('hex'), { mode: 0o600 });
     cachedKey = generated;
     return cachedKey;
-  } catch {
-    // Ephemeral fallback if runtime filesystem is completely read-only
-    cachedKey = crypto
-      .createHash('sha256')
-      .update(process.env.AUTH_SESSION_SECRET || 'leadflow-ephemeral-fallback-key')
-      .digest();
+  } catch (error) {
+    if (process.env.NODE_ENV === 'production') throw error;
+    cachedKey = crypto.randomBytes(32);
     return cachedKey;
   }
 }

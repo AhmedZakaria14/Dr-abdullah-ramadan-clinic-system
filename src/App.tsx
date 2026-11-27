@@ -58,7 +58,6 @@ import {
   MASTER_OWNER_EMAIL,
 } from './lib/constants';
 import { apiRequest, getAuthToken, onUnauthorized, setAuthToken } from './lib/api';
-import { markLeadReadLocally } from './lib/leadReadState';
 import { formatCairoDateTime, formatCairoTimeOnly } from './lib/dateFormat';
 import {
   BrowserNotificationSupport,
@@ -221,7 +220,10 @@ function LeadFlowAppInner() {
   const prevBusinessIdRef = useRef<string>('');
   const pendingDeepLinkRef = useRef<{ leadId: string | null; businessId: string | null } | null>(null);
   const seenNotificationIdsRef = useRef<Set<string>>(new Set());
-  const syncInFlightRef = useRef<boolean>(false);
+  const syncInFlightRef = useRef<string | null>(null);
+  const workspaceLoadSequence = useRef(0);
+  const activeBusinessIdRef = useRef(activeBusinessId);
+  activeBusinessIdRef.current = activeBusinessId;
   const consecutiveSyncFailuresRef = useRef<number>(0);
   const refreshDebounceTimerRef = useRef<number | null>(null);
   const sseBatchBufferRef = useRef<NotificationItem[]>([]);
@@ -356,7 +358,8 @@ function LeadFlowAppInner() {
         user?: UserProfile;
         businesses?: Business[];
         demoBusinesses?: Business[];
-      }>('/me');
+      }>('/me', { skipAuthRedirect: true });
+      if (getAuthToken() !== token) return;
 
       const prodList = Array.isArray(res?.businesses) ? res.businesses : [];
       const demoList = Array.isArray(res?.demoBusinesses) ? res.demoBusinesses : [];
@@ -366,12 +369,18 @@ function LeadFlowAppInner() {
       setProdBusinesses(prodList);
       setDemoBusinesses(demoList);
       selectPreferredWorkspace(prodList, demoList);
-    } catch {
-      setAuthToken(null);
-      setAuthUser(null);
-      setProdBusinesses([]);
-      setDemoBusinesses([]);
-      setActiveBusinessId('');
+    } catch (error: any) {
+      if (getAuthToken() !== token) return;
+      if (error.status === 401) {
+        setAuthToken(null);
+        setAuthUser(null);
+        setCurrentUserId(null);
+        setProdBusinesses([]);
+        setDemoBusinesses([]);
+        setActiveBusinessId('');
+      } else {
+        notify(error.message, 'error');
+      }
     } finally {
       setAuthReady(true);
     }
@@ -393,6 +402,11 @@ function LeadFlowAppInner() {
       setMonitoredFeed(null);
     });
     loadSessionAndWorkspaces();
+    const restoreSession = () => {
+      if (getAuthToken()) void loadSessionAndWorkspaces();
+    };
+    window.addEventListener('online', restoreSession);
+    return () => window.removeEventListener('online', restoreSession);
   }, []);
 
   const allBusinesses = Array.from(
@@ -522,6 +536,8 @@ function LeadFlowAppInner() {
 
   const loadWorkspaceData = async (bizId: string) => {
     if (!bizId) return;
+    const sequence = ++workspaceLoadSequence.current;
+    const isCurrentWorkspace = () => sequence === workspaceLoadSequence.current && activeBusinessIdRef.current === bizId;
     setAnalyticsLoading(true);
     try {
       const [stagesRes, fieldsRes, membersRes, analyticsRes, notifRes, sheetRes] = await Promise.all([
@@ -532,6 +548,7 @@ function LeadFlowAppInner() {
         apiRequest<{ notifications?: NotificationItem[]; unreadCount?: number }>(`/businesses/${bizId}/notifications`),
         apiRequest<any>(`/businesses/${bizId}/sheet-source/status`).catch(() => null),
       ]);
+      if (!isCurrentWorkspace()) return;
       const loadedNotifs = Array.isArray(notifRes?.notifications) ? notifRes.notifications : [];
       for (const n of loadedNotifs) {
         if (n?.id) seenNotificationIdsRef.current.add(n.id);
@@ -547,18 +564,18 @@ function LeadFlowAppInner() {
         void loadMonitoredAccounts(bizId);
       }
     } catch (err: any) {
-      notify(err.message, 'error');
+      if (isCurrentWorkspace()) notify(err.message, 'error');
     } finally {
-      setAnalyticsLoading(false);
+      if (isCurrentWorkspace()) setAnalyticsLoading(false);
     }
   };
 
-  const syncLeadUrl = (leadId: string | null) => {
+  const syncLeadUrl = (leadId: string | null, businessId = activeBusinessId) => {
     try {
       const url = new URL(window.location.href);
       if (leadId) {
         url.searchParams.set('lead', leadId);
-        if (activeBusinessId) url.searchParams.set('business', activeBusinessId);
+        if (businessId) url.searchParams.set('business', businessId);
       } else {
         url.searchParams.delete('lead');
         url.searchParams.delete('business');
@@ -579,40 +596,11 @@ function LeadFlowAppInner() {
       setActiveBusinessId(effectiveBizId);
     }
 
-    const nowIso = new Date().toISOString();
-    const openedPreview: Lead | null = initialLead
-      ? {
-          ...initialLead,
-          is_read: 1,
-          read_at: initialLead.read_at || nowIso,
-        }
-      : null;
-
-    if (effectiveBizId && leadId) {
-      markLeadReadLocally(effectiveBizId, openedPreview || leadId);
-      apiRequest(`/businesses/${effectiveBizId}/leads/${encodeURIComponent(leadId)}/read`, {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify({
-          isRead: true,
-          leadCode: initialLead?.lead_code || undefined,
-          externalRowId: initialLead?.external_row_id || undefined,
-          phone: initialLead?.phone_e164 || initialLead?.phone || undefined,
-        }),
-      })
-        .then(() => {
-          setRefreshCounter((c) => c + 1);
-        })
-        .catch(() => {
-          // LeadDetailView GET /leads/:id will also mark it read
-        });
-    }
-
     setActiveTab('leads');
-    setSelectedLeadPreview(openedPreview);
+    setSelectedLeadPreview(initialLead || null);
     setSelectedLeadId(leadId);
     setShowNotifMenu(false);
-    syncLeadUrl(leadId);
+    syncLeadUrl(leadId, effectiveBizId);
   };
 
   const handleCloseLeadDetail = () => {
@@ -686,6 +674,9 @@ function LeadFlowAppInner() {
     prevBusinessIdRef.current = activeBusinessId;
 
     if (prevBiz && prevBiz !== activeBusinessId) {
+      setSheetStatus(null);
+      consecutiveSyncFailuresRef.current = 0;
+      seenNotificationIdsRef.current.clear();
       setMonitoredUserId(null);
       setMonitoredAccounts([]);
       setShowMonitorDrawer(false);
@@ -895,6 +886,7 @@ function LeadFlowAppInner() {
         es = new EventSource(url);
         es.addEventListener('connected', () => {
           setSseConnected(true);
+          requestWorkspaceRefresh();
         });
         es.addEventListener('notification', (evt) => {
           try {
@@ -992,6 +984,7 @@ function LeadFlowAppInner() {
         window.clearTimeout(sseBatchTimerRef.current);
         sseBatchTimerRef.current = null;
       }
+      sseBatchBufferRef.current.length = 0;
       es?.close();
     };
   }, [activeBusinessId, authUser?.id]);
@@ -1000,7 +993,7 @@ function LeadFlowAppInner() {
   const triggerSheetSync = async (options?: { manual?: boolean; signal?: AbortSignal }) => {
     const bizId = activeBusinessId;
     if (!bizId || !authUser) return;
-    if (syncInFlightRef.current) return;
+    if (syncInFlightRef.current === bizId) return;
     if (!options?.manual && typeof navigator !== 'undefined' && !navigator.onLine) return;
 
     const hasConfiguredSheet = Boolean(
@@ -1009,11 +1002,13 @@ function LeadFlowAppInner() {
       sheetStatus?.publicCsvUrl ||
       sheetStatus?.spreadsheetId
     );
-    if (!options?.manual && sheetStatus && !hasConfiguredSheet) {
+    if (!options?.manual && sheetStatus && (!hasConfiguredSheet || sheetStatus.autoScheduled === false)) {
       return;
     }
 
-    syncInFlightRef.current = true;
+    const sentToken = getAuthToken();
+    const isCurrentWorkspace = () => activeBusinessIdRef.current === bizId && getAuthToken() === sentToken;
+    syncInFlightRef.current = bizId;
     setSyncingNow(true);
     setSheetStatus((prev) => (prev ? { ...prev, isSyncing: true, lastError: options?.manual ? null : prev.lastError } : prev));
 
@@ -1028,6 +1023,8 @@ function LeadFlowAppInner() {
         totalLeadsInBusiness: number;
         syncDurationMs?: number;
         lastSuccessAt?: string;
+        lastError?: string | null;
+        deferred?: boolean;
         createdNotifications?: NotificationItem[];
         newLeads?: Array<{ id: string; sheetLeadId: string; fullName: string; phone: string; createdTime: string }>;
       }>(`/businesses/${bizId}/sheet-source/sync`, {
@@ -1036,6 +1033,7 @@ function LeadFlowAppInner() {
         signal: options?.signal,
       });
 
+      if (!isCurrentWorkspace() || options?.signal?.aborted || res.deferred) return;
       consecutiveSyncFailuresRef.current = 0;
 
       if (res.mode === 'pending_config' || res.sourceMode === 'pending_config') {
@@ -1058,15 +1056,15 @@ function LeadFlowAppInner() {
         return;
       }
 
-      const nowIso = res.lastSuccessAt || new Date().toISOString();
+      const lastSyncAt = res.lastSuccessAt;
 
       setSheetStatus((prev) => ({
         ...(prev || {}),
-        status: 'connected',
+        status: res.lastError ? 'error' : 'connected',
         isSyncing: false,
-        lastSyncAt: nowIso,
+        lastSyncAt: lastSyncAt ?? prev?.lastSyncAt,
         lastSyncDurationMs: res.syncDurationMs ?? prev?.lastSyncDurationMs ?? null,
-        lastError: null,
+        lastError: res.lastError || null,
         consecutiveFailures: 0,
         totalLeads: res.totalLeadsInBusiness ?? prev?.totalLeads,
         lastCreatedCount: res.createdCount,
@@ -1083,11 +1081,13 @@ function LeadFlowAppInner() {
         setLastDetectedNewCount(res.createdCount);
       }
 
-      if (options?.manual && (!res.createdNotifications || res.createdNotifications.length === 0)) {
+      if (options?.manual && res.lastError) {
+        notify(res.lastError, 'error');
+      } else if (options?.manual && (!res.createdNotifications || res.createdNotifications.length === 0)) {
         notify(
           langRef.current === 'ar'
-            ? `تمت مزامنة Google Sheets (${res.totalLeadsInBusiness} عميل) — متطابق 100% مع الشيت (${res.syncDurationMs || 0}ms)`
-            : `Google Sheets synced (${res.totalLeadsInBusiness} leads) — 100% in sync (${res.syncDurationMs || 0}ms)`,
+            ? `تمت مزامنة Google Sheets (${res.totalLeadsInBusiness} عميل) (${res.syncDurationMs || 0}ms)`
+            : `Google Sheets synced (${res.totalLeadsInBusiness} leads) (${res.syncDurationMs || 0}ms)`,
           'success'
         );
       }
@@ -1105,7 +1105,7 @@ function LeadFlowAppInner() {
         requestWorkspaceRefresh();
       }
     } catch (err: any) {
-      if (err?.name === 'AbortError') return;
+      if (err?.name === 'AbortError' || !isCurrentWorkspace()) return;
       consecutiveSyncFailuresRef.current += 1;
       const errMsg = err?.message || 'Sheet sync failed';
       setSheetStatus((prev) => ({
@@ -1119,8 +1119,11 @@ function LeadFlowAppInner() {
         notify(errMsg, 'error');
       }
     } finally {
-      syncInFlightRef.current = false;
-      setSyncingNow(false);
+      if (isCurrentWorkspace() && syncInFlightRef.current === bizId) {
+        syncInFlightRef.current = null;
+        setSyncingNow(false);
+        setSheetStatus((prev) => (prev ? { ...prev, isSyncing: false } : prev));
+      }
     }
   };
 
@@ -1183,12 +1186,29 @@ function LeadFlowAppInner() {
     return () => {
       cancelled = true;
       abortController.abort();
+      if (syncInFlightRef.current === activeBusinessId) syncInFlightRef.current = null;
+      setSyncingNow(false);
       if (timerId !== null) window.clearTimeout(timerId);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
   }, [activeBusinessId, authUser?.id]);
+
+  useEffect(() => {
+    if (!activeBusinessId || !authUser || sseConnected) return;
+    const refresh = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) requestWorkspaceRefresh();
+    };
+    const timer = window.setInterval(refresh, 10_000);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+    };
+  }, [activeBusinessId, authUser?.id, sseConnected]);
 
   const handleLoginSuccess = (data: {
     token: string;
@@ -2290,7 +2310,9 @@ function LeadFlowAppInner() {
               <LeadDetailView
                 lang={lang}
                 businessId={activeBusiness.id}
+                key={`${activeBusiness.id}:${selectedLeadId}`}
                 leadId={selectedLeadId}
+                refreshTrigger={refreshCounter}
                 initialLead={selectedLeadPreview}
                 userRole={effectiveRole}
                 stages={stages}
@@ -2330,6 +2352,7 @@ function LeadFlowAppInner() {
               />
             ) : activeTab === 'pipeline' ? (
               <PipelineView
+                refreshTrigger={refreshCounter}
                 lang={lang}
                 businessId={activeBusiness.id}
                 userRole={effectiveRole}

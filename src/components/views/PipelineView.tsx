@@ -3,7 +3,6 @@ import { Settings2, Plus, Trash2, ArrowUp, ArrowDown, Phone } from 'lucide-react
 import { Language, Lead, PipelineStage, Role } from '../../types/crm';
 import { getT } from '../../i18n/translations';
 import { apiRequest } from '../../lib/api';
-import { markLeadReadLocally, reconcileLeadsReadState } from '../../lib/leadReadState';
 import {
   clearLeadWhatsAppContactedLocally,
   findContactedStage,
@@ -14,6 +13,7 @@ import {
 interface PipelineViewProps {
   lang: Language;
   businessId: string;
+  refreshTrigger: number;
   userRole: Role;
   stages: PipelineStage[];
   onSelectLead: (leadId: string, lead?: Lead) => void;
@@ -24,6 +24,7 @@ interface PipelineViewProps {
 export const PipelineView: React.FC<PipelineViewProps> = ({
   lang,
   businessId,
+  refreshTrigger,
   userRole,
   stages,
   onSelectLead,
@@ -45,10 +46,9 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   const fetchBoardLeads = async () => {
     try {
       const res = await apiRequest<{ leads: Lead[] }>(`/businesses/${businessId}/leads?pageSize=100`);
-      const { leads: readReconciled, unsyncedIds } = reconcileLeadsReadState(businessId, res.leads || []);
       const { leads: reconciled, unsyncedLeads: unsyncedWaLeads } = reconcileLeadsWhatsAppStatus(
         businessId,
-        readReconciled,
+        res.leads || [],
         stages
       );
       setLeads(reconciled);
@@ -57,12 +57,6 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
           unsyncedWaLeads.slice(0, 10).map((ul) => sendWhatsAppContactRequest(businessId, ul))
         );
       }
-      if (unsyncedIds.length > 0 && userRole !== 'employee') {
-        apiRequest(`/businesses/${businessId}/leads/bulk`, {
-          method: 'POST',
-          body: JSON.stringify({ leadIds: unsyncedIds, action: 'mark_read' }),
-        }).catch(() => {});
-      }
     } catch (err: any) {
       onNotify(err.message, 'error');
     }
@@ -70,7 +64,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
 
   useEffect(() => {
     fetchBoardLeads();
-  }, [businessId, stages.length]);
+  }, [businessId, stages.length, refreshTrigger]);
 
   const moveLeadToStage = async (leadId: string, toStatusId: string) => {
     const prevLeads = [...leads];
@@ -353,8 +347,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
                       draggable
                       onDragStart={() => setDraggingId(lead.id)}
                       onClick={() => {
-                        markLeadReadLocally(businessId, lead);
-                        onSelectLead(lead.id, { ...lead, is_read: 1, read_at: lead.read_at || new Date().toISOString() });
+                        onSelectLead(lead.id, lead);
                       }}
                       className={`rounded-lg border border-s-4 p-3 cursor-pointer active:cursor-grabbing transition-colors crm-cv-auto ${
                         isUnread

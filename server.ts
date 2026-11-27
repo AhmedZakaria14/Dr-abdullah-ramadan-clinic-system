@@ -1,12 +1,10 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import dotenv from 'dotenv';
 import { ensureDbReady, getDb } from './server/db.ts';
 import { buildApp } from './server/app.ts';
-import { CLINIC_WORKSPACE_ID, startAttachedSheetWatcher } from './server/services/sheetSyncService.ts';
-
-dotenv.config();
+import { startAttachedSheetWatcher } from './server/services/sheetSyncService.ts';
 
 export { buildApp };
 
@@ -16,10 +14,19 @@ const __dirname =
     : process.cwd();
 
 async function startServer() {
-  await ensureDbReady();
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.DATABASE_PATH || !path.isAbsolute(process.env.DATABASE_PATH)) {
+      throw new Error('Set DATABASE_PATH to an absolute path on the persistent database volume');
+    }
+    if ((process.env.AUTH_SESSION_SECRET?.trim().length || 0) < 32) {
+      throw new Error('Set AUTH_SESSION_SECRET to a shared secret of at least 32 characters');
+    }
+  } else {
+    await ensureDbReady();
+  }
   const db = getDb();
   const app = buildApp({ db });
-  startAttachedSheetWatcher(db, CLINIC_WORKSPACE_ID);
+  startAttachedSheetWatcher(db);
   const rawEnvPort = process.env.PORT ? Number(process.env.PORT) : NaN;
   const nginxPort = process.env.NGINX_PORT ? Number(process.env.NGINX_PORT) : NaN;
   const defaultAppPort = Number(process.env.DEFAULT_APP_PORT || 3000);

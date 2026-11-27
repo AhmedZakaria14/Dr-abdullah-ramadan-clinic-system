@@ -188,11 +188,13 @@ export function reconcileLeadWhatsAppStatus(
     return { lead, needsSync: false };
   }
 
-  // If still unsynced (e.g. mobile WhatsApp handoff aborted POST or in-flight GET raced)
-  // OR server is still stuck in pre-contacted status (new / contact_attempted), keep "تم التواصل" and re-sync!
-  if (!match.synced || isPreContactedStatus(lead, contactedStage)) {
+  if (!match.synced && isPreContactedStatus(lead, contactedStage)) {
     return {
-      lead: applyContactedStageToLead(lead, contactedStage, match.contactedAt),
+      lead: {
+        ...applyContactedStageToLead(lead, contactedStage, match.contactedAt),
+        is_read: lead.is_read,
+        read_at: lead.read_at,
+      },
       needsSync: true,
     };
   }
