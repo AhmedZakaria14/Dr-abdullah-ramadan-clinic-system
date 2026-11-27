@@ -20,7 +20,7 @@ The backend checks enabled sources even with the dashboard closed. The default i
 
 1. Set `CRM_API_ORIGIN` to the backend HTTPS origin on a preview deployment first. The API function returns 503 when the origin is missing.
 2. Verify the preview API health endpoint, sign in with two browser sessions, and check the read/unread state and sheet status. Confirm the deployment webhook still receives raw request bytes if Meta is in use.
-3. Set the same variable in the production environment after verifying the database backup and preview. The repository disables automatic Git deployments from `main` during the migration. Remove the `git.deploymentEnabled.main` override from `vercel.json` only when the production backend is ready and the preview checks pass.
+3. Set the same variable in the production environment after verifying the database backup and preview. Vercel can deploy automatically from `main` once the project is linked. If the production variables change, redeploy to apply them.
 4. Verify production health and both sessions after deploying. To roll back, restore the previous production deployment and keep the persistent database backup. Keep the database volume and its backup private.
 
 ## Local verification
